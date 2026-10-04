@@ -1,0 +1,308 @@
+:root {
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    color-scheme: light dark;
+}
+
+body {
+    margin: 0;
+}
+
+main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+section {
+    margin-block: 32px;
+}
+
+.status {
+    min-height: 1.5em;
+}
+
+.status.error {
+    color: #d33;
+}
+
+canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    /* Keep pixels sharp when a small image is zoomed in. */
+    image-rendering: pixelated;
+    /* A checkerboard behind the image shows transparent areas. */
+    background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 16px 16px;
+}
+
+table {
+    border-collapse: collapse;
+}
+
+th,
+td {
+    padding: 4px 16px 4px 0;
+    text-align: left;
+}
+
+th {
+    font-weight: 600;
+}
+
+/* Chunks */
+
+:root {
+    --border: light-dark(#ddd, #444);
+    --muted: light-dark(#666, #aaa);
+    --surface: light-dark(#f7f7f8, #1f1f22);
+    --cat-signature: #8a8a8a;
+    --cat-structure: #3b82f6;
+    --cat-palette: #d946ef;
+    --cat-data: light-dark(#9ca3af, #6b7280);
+    --cat-metadata: #10b981;
+    --cat-text: #f59e0b;
+    --cat-unknown: #ef4444;
+}
+
+.cat-signature { --cat: var(--cat-signature); }
+.cat-structure { --cat: var(--cat-structure); }
+.cat-palette { --cat: var(--cat-palette); }
+.cat-data { --cat: var(--cat-data); }
+.cat-metadata { --cat: var(--cat-metadata); }
+.cat-text { --cat: var(--cat-text); }
+.cat-unknown { --cat: var(--cat-unknown); }
+
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    align-items: center;
+}
+
+code,
+.mono,
+.dump {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+/* A bar of the file, one segment per chunk, sized by bytes. */
+.layout {
+    display: flex;
+    height: 40px;
+    margin-top: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+
+.layout .segment {
+    flex-basis: 0;
+    min-width: 6px;
+    background: var(--cat);
+    border-right: 1px solid light-dark(#fff, #000);
+    color: #fff;
+    font: 600 12px ui-monospace, Consolas, monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.layout .segment:hover {
+    filter: brightness(1.15);
+}
+
+.layout .segment span {
+    padding: 0 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
+}
+
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    padding: 0;
+    margin: 8px 0 16px;
+    list-style: none;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--cat);
+    vertical-align: baseline;
+}
+
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.card {
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    min-width: 0;
+}
+
+.card h4 {
+    margin: 0 0 8px;
+}
+
+.card dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 12px;
+    margin: 0;
+}
+
+.card dt {
+    color: var(--muted);
+}
+
+.card dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.card .text-list {
+    display: block;
+    max-height: 240px;
+    overflow: auto;
+}
+
+.text-list dt {
+    color: inherit;
+    font-weight: 600;
+}
+
+.text-list dd {
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+}
+
+.swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    vertical-align: middle;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background:
+        linear-gradient(var(--color), var(--color)),
+        repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 8px 8px;
+}
+
+.palette {
+    display: grid;
+    grid-template-columns: repeat(16, minmax(0, 24px));
+    gap: 3px;
+}
+
+.palette .swatch {
+    width: auto;
+    height: auto;
+    aspect-ratio: 1;
+}
+
+.badge {
+    display: inline-block;
+    padding: 0 6px;
+    margin-right: 4px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 11px;
+    line-height: 18px;
+    font-weight: normal;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.badge.critical { color: var(--cat-structure); border-color: currentColor; }
+.badge.private { color: var(--cat-palette); border-color: currentColor; }
+.badge.unknown { color: var(--cat-unknown); border-color: currentColor; }
+.badge.compressed { color: var(--cat-text); border-color: currentColor; }
+
+.table-scroll {
+    overflow-x: auto;
+}
+
+table.chunks {
+    width: 100%;
+    font-size: 14px;
+}
+
+table.chunks thead th {
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+}
+
+table.chunks tbody tr:not(.detail) {
+    border-top: 1px solid var(--border);
+    cursor: pointer;
+}
+
+table.chunks tbody tr:not(.detail):hover {
+    background: var(--surface);
+}
+
+table.chunks td {
+    vertical-align: top;
+    white-space: nowrap;
+}
+
+table.chunks .num {
+    text-align: right;
+}
+
+table.chunks .type {
+    font-weight: 600;
+}
+
+table.chunks .contents {
+    white-space: normal;
+    min-width: 200px;
+    overflow-wrap: anywhere;
+}
+
+.toggle {
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0 4px;
+    font: inherit;
+}
+
+tr.detail td {
+    padding: 0 0 12px 24px;
+}
+
+.dump {
+    margin: 0;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    background: var(--surface);
+    border-radius: 6px;
+    overflow-x: auto;
+    max-height: 320px;
+}
+
+@keyframes flash {
+    from { background: color-mix(in srgb, var(--cat) 35%, transparent); }
+}
+
+tr.flash {
+    animation: flash 1.2s ease-out;
+}

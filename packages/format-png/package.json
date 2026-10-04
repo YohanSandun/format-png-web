@@ -1,0 +1,24 @@
+{
+  "name": "format-png",
+  "version": "0.1.0",
+  "description": "PNG decoder compiled to WebAssembly",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "scripts": {
+    "build:wasm": "cargo build -p format-png-wasm --release --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir src/wasm ../../target/wasm32-unknown-unknown/release/format_png_wasm.wasm",
+    "build:ts": "tsc -p tsconfig.json",
+    "build": "npm run build:wasm && npm run build:ts && node scripts/copy-wasm.mjs",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>format-png demo</title>
+  </head>
+  <body>
+    <main>
+      <h1>format-png demo</h1>
+
+      <section>
+        <h2>Preview</h2>
+        <p>Decodes the whole image to RGBA and draws it on a canvas.</p>
+        <input id="preview-input" type="file" accept="image/png" />
+        <p id="preview-status" class="status"></p>
+        <canvas id="preview-canvas" hidden></canvas>
+      </section>
+
+      <section>
+        <h2>Header</h2>
+        <p>Reads only the signature and <code>IHDR</code>, without decoding pixels.</p>
+        <input id="header-input" type="file" accept="image/png" />
+        <p id="header-status" class="status"></p>
+        <table id="header-table" hidden>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Chunks</h2>
+        <p>
+          Reads every chunk with <code>readChunks</code>, without decompressing the image data: the header,
+          palette, transparency, metadata and text parsed, and every chunk raw, including private and unknown ones.
+        </p>
+        <div class="controls">
+          <input id="chunks-input" type="file" accept="image/png" />
+          <label><input id="chunks-validate-crc" type="checkbox" checked /> Validate CRC</label>
+          <label><input id="chunks-strict" type="checkbox" /> Strict ancillary</label>
+        </div>
+        <p id="chunks-status" class="status"></p>
+        <div id="chunks-output" hidden>
+          <div id="chunks-layout" class="layout" role="list" aria-label="File layout"></div>
+          <ul id="chunks-legend" class="legend"></ul>
+          <div id="chunks-cards" class="cards"></div>
+          <h3>All chunks</h3>
+          <div class="table-scroll">
+            <table id="chunks-table" class="chunks">
+              <thead>
+                <tr><th></th><th>#</th><th>Offset</th><th>Type</th><th>Flags</th><th class="num">Size</th><th>CRC</th><th>Contents</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

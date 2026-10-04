@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "workspaces": ["packages/*", "examples/*"],
+  "scripts": {
+    "build": "npm run build -w format-png",
+    "test": "npm test -w format-png"
+  }
+}
