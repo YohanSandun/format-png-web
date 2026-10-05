@@ -4,42 +4,51 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Inspect, decode, encode and minimize PNG files in the browser with format-png, a PNG codec compiled to WebAssembly." />
     <title>format-png demo</title>
   </head>
   <body>
-    <main>
-      <h1>format-png demo</h1>
-
-      <section>
-        <h2>Preview</h2>
-        <p>Decodes the whole image to RGBA and draws it on a canvas.</p>
-        <input id="preview-input" type="file" accept="image/png" />
-        <p id="preview-status" class="status"></p>
-        <canvas id="preview-canvas" hidden></canvas>
-      </section>
-
-      <section>
-        <h2>Header</h2>
-        <p>Reads only the signature and <code>IHDR</code>, without decoding pixels.</p>
-        <input id="header-input" type="file" accept="image/png" />
-        <p id="header-status" class="status"></p>
-        <table id="header-table" hidden>
-          <tbody></tbody>
-        </table>
-      </section>
-
-      <section>
-        <h2>Chunks</h2>
-        <p>
-          Reads every chunk with <code>readChunks</code>, without decompressing the image data: the header,
-          palette, transparency, metadata and text parsed, and every chunk raw, including private and unknown ones.
-        </p>
-        <div class="controls">
-          <input id="chunks-input" type="file" accept="image/png" />
-          <label><input id="chunks-validate-crc" type="checkbox" checked /> Validate CRC</label>
-          <label><input id="chunks-strict" type="checkbox" /> Strict ancillary</label>
+    <header class="app-header">
+      <div class="app-header-inner">
+        <div class="brand">
+          <img src="/favicon.svg" alt="" width="32" height="32" />
+          <div>
+            <h1>format-png</h1>
+            <p class="tagline">A PNG decoder and encoder in WebAssembly. Everything runs in your browser; files never leave it.</p>
+          </div>
         </div>
-        <p id="chunks-status" class="status"></p>
+        <nav class="links" aria-label="Project links">
+          <a href="https://www.npmjs.com/package/format-png">npm</a>
+          <a href="https://github.com/YohanSandun/format-png-web">GitHub</a>
+        </nav>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Features">
+        <button role="tab" id="tab-chunks" aria-controls="panel-chunks" data-tab="chunks">Chunks</button>
+        <button role="tab" id="tab-decode" aria-controls="panel-decode" data-tab="decode">Decode</button>
+        <button role="tab" id="tab-encode" aria-controls="panel-encode" data-tab="encode">Encode</button>
+        <button role="tab" id="tab-minimize" aria-controls="panel-minimize" data-tab="minimize">Minimize</button>
+      </div>
+    </header>
+
+    <main>
+      <section role="tabpanel" id="panel-chunks" aria-labelledby="tab-chunks" hidden>
+        <div class="intro">
+          <h2>Inspect every chunk</h2>
+          <p>
+            <code>readChunks</code> reads a PNG without decompressing its image data: the header, palette,
+            transparency, color and text metadata parsed, and every chunk raw, including private and unknown ones.
+          </p>
+        </div>
+        <label class="dropzone">
+          <input id="chunks-input" type="file" accept="image/png" />
+          <span class="dropzone-title">Drop a PNG here, or click to choose one</span>
+          <span class="dropzone-hint">or <button type="button" class="link" data-sample="chunks-input">try a sample image</button></span>
+        </label>
+        <div class="controls">
+          <label class="check"><input id="chunks-validate-crc" type="checkbox" checked /> Validate CRC</label>
+          <label class="check"><input id="chunks-strict" type="checkbox" /> Strict ancillary</label>
+        </div>
+        <p id="chunks-status" class="status" role="status"></p>
         <div id="chunks-output" hidden>
           <div id="chunks-layout" class="layout" role="list" aria-label="File layout"></div>
           <ul id="chunks-legend" class="legend"></ul>
@@ -55,7 +64,201 @@
           </div>
         </div>
       </section>
+
+      <section role="tabpanel" id="panel-decode" aria-labelledby="tab-decode" hidden>
+        <div class="intro">
+          <h2>Decode</h2>
+          <p>
+            <code>readHeader</code> reads only the signature and <code>IHDR</code>; <code>decodeRgba8</code> decodes
+            every color type, bit depth and interlacing to 8-bit RGBA, ready for a canvas.
+          </p>
+        </div>
+        <label class="dropzone">
+          <input id="decode-input" type="file" accept="image/png" />
+          <span class="dropzone-title">Drop a PNG here, or click to choose one</span>
+          <span class="dropzone-hint">or <button type="button" class="link" data-sample="decode-input">try a sample image</button></span>
+        </label>
+        <p id="decode-status" class="status" role="status"></p>
+        <div class="split">
+          <div class="card" id="header-card" hidden>
+            <h4>Header</h4>
+            <table id="header-table" class="fields">
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="stage">
+            <canvas id="preview-canvas" hidden></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panel-encode" aria-labelledby="tab-encode" hidden>
+        <div class="intro">
+          <h2>Encode</h2>
+          <p>
+            <code>encodeRgba8</code> writes any image as a PNG, then the result is decoded again to check every
+            pixel came through. PNGs keep their metadata and chunks; JPEG, WebP and other formats are decoded by the
+            browser. Change an option to encode again.
+          </p>
+        </div>
+        <label class="dropzone">
+          <input id="encode-input" type="file" accept="image/*" />
+          <span class="dropzone-title">Drop an image here, or click to choose one</span>
+          <span class="dropzone-hint">PNG, JPEG, WebP, GIF… or <button type="button" class="link" data-sample="encode-input">try a sample image</button></span>
+        </label>
+        <div class="options">
+          <fieldset>
+            <legend>Compression</legend>
+            <label>
+              Level <output id="encode-compression-value">6</output>
+              <input id="encode-compression" type="range" min="0" max="9" value="6" />
+            </label>
+            <label>
+              Strategy
+              <select id="encode-strategy">
+                <option value="dynamic">dynamic</option>
+                <option value="fixed">fixed</option>
+                <option value="stored">stored</option>
+              </select>
+            </label>
+            <label>
+              Filter
+              <select id="encode-filter">
+                <option value="adaptive">adaptive</option>
+                <option value="none">none</option>
+                <option value="sub">sub</option>
+                <option value="up">up</option>
+                <option value="average">average</option>
+                <option value="paeth">paeth</option>
+              </select>
+            </label>
+          </fieldset>
+          <fieldset>
+            <legend>Image</legend>
+            <label class="check"><input id="encode-interlaced" type="checkbox" /> Adam7 interlaced</label>
+            <label class="check" title="Write images with at most 256 colors as indexed color; lossless">
+              <input id="encode-palette" type="checkbox" /> Palette when it fits
+            </label>
+          </fieldset>
+          <fieldset>
+            <legend>Chunks</legend>
+            <label class="check"><input id="encode-metadata" type="checkbox" checked /> Keep metadata and chunks</label>
+            <label class="check" title="Chunks such as bKGD and sBIT describe the original pixels, which were converted to 8-bit RGBA">
+              <input id="encode-unsafe" type="checkbox" /> Keep unsafe-to-copy chunks
+            </label>
+            <label>
+              Strip
+              <select id="encode-strip">
+                <option value="keep">keep</option>
+                <option value="safe">safe</option>
+                <option value="all">all</option>
+              </select>
+            </label>
+            <label>Comment <input id="encode-comment" type="text" placeholder="Adds an iTXt chunk" /></label>
+          </fieldset>
+        </div>
+        <p id="encode-status" class="status" role="status"></p>
+        <div id="encode-output" hidden>
+          <div id="encode-cards" class="cards"></div>
+          <div class="actions">
+            <a id="encode-download" class="button primary" href="#" download>Download PNG</a>
+            <button id="encode-compare" class="button" type="button">Compare filters</button>
+          </div>
+          <table id="encode-compare-table" class="compare" hidden>
+            <thead>
+              <tr><th>Filter</th><th class="num">Size</th><th class="num">vs. smallest</th><th class="num">Time</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <div class="stage">
+            <canvas id="encode-canvas"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panel-minimize" aria-labelledby="tab-minimize" hidden>
+        <div class="intro">
+          <h2>Minimize</h2>
+          <p>
+            Makes a PNG as small as possible without changing a single pixel, 16-bit included: it strips the chunks
+            you choose, converts images with at most 256 colors to a palette, and tries several encodings in parallel
+            Web Workers to keep the smallest.
+          </p>
+        </div>
+        <label class="dropzone">
+          <input id="minimize-input" type="file" accept="image/png" />
+          <span class="dropzone-title">Drop a PNG here, or click to choose one</span>
+          <span class="dropzone-hint">or <button type="button" class="link" data-sample="minimize-input">try a sample image</button></span>
+        </label>
+        <fieldset class="strip-levels">
+          <legend>Strip level</legend>
+          <label class="level">
+            <input type="radio" name="minimize-strip" value="keep" />
+            <span><strong>Keep</strong> Keep every chunk; only recompress.</span>
+          </label>
+          <label class="level">
+            <input type="radio" name="minimize-strip" value="safe" checked />
+            <span>
+              <strong>Safe</strong> Keep what changes how the image looks (<code>cICP</code>, <code>iCCP</code>,
+              <code>sRGB</code>, <code>gAMA</code>, <code>cHRM</code>, <code>pHYs</code>); drop text, <code>tIME</code>,
+              <code>eXIf</code> and private chunks. Exif orientation is lost.
+            </span>
+          </label>
+          <label class="level">
+            <input type="radio" name="minimize-strip" value="all" />
+            <span><strong>All</strong> Keep only what the pixels need. Colors may look different in color-managed viewers.</span>
+          </label>
+        </fieldset>
+        <div class="controls">
+          <label class="check"><input id="minimize-palette" type="checkbox" checked /> Try a palette</label>
+          <label class="check" title="Encode in Web Workers, one encoding per worker at a time">
+            <input id="minimize-parallel" type="checkbox" checked /> Parallel (<span id="minimize-workers"></span> workers)
+          </label>
+          <label>
+            Effort
+            <select id="minimize-effort">
+              <option value="fast">fast: one encoding</option>
+              <option value="thorough" selected>thorough: every filter, best compression</option>
+            </select>
+          </label>
+        </div>
+        <p id="minimize-status" class="status" role="status"></p>
+        <div id="minimize-output" hidden>
+          <div id="minimize-cards" class="cards"></div>
+          <div class="actions"><a id="minimize-download" class="button primary" href="#" download>Download minimized PNG</a></div>
+          <div class="split">
+            <div>
+              <h3>Removed chunks</h3>
+              <p id="minimize-removed-none" class="muted">None.</p>
+              <table id="minimize-removed" class="compare">
+                <thead>
+                  <tr><th>Type</th><th class="num">Count</th><th class="num">Size</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div>
+              <h3>Encodings tried</h3>
+              <div class="table-scroll">
+                <table id="minimize-candidates" class="compare">
+                  <thead>
+                    <tr><th>Written as</th><th>Palette</th><th>Filter</th><th class="num">Size</th><th class="num">vs. smallest</th><th class="num">Time</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="stage">
+            <canvas id="minimize-canvas"></canvas>
+          </div>
+        </div>
+      </section>
     </main>
+
+    <footer class="app-footer">
+      format-png · MIT license · Rust compiled to WebAssembly
+    </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

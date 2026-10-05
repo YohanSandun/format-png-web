@@ -60,6 +60,35 @@ export interface PngText {
     compressed: boolean;
 }
 
+/** `iCCP`: an embedded ICC color profile. */
+export interface IccProfile {
+    /** Only meaningful to people, for example "ICC Profile". 1 to 79 characters of printable Latin-1. */
+    name: string;
+    /** The ICC profile, decompressed. Pass it to a color management library to apply it. */
+    profile: Uint8Array;
+}
+
+/**
+ * `cICP`: the color space as ITU-T H.273 code points, as video uses. sRGB is
+ * primaries 1 and transfer 13; Display P3 is 12 and 13; HDR PQ is 9 and 16.
+ * Takes precedence over every other color chunk.
+ */
+export interface Cicp {
+    colorPrimaries: number;
+    transferFunction: number;
+    /** Always 0 (RGB) in PNG. */
+    matrixCoefficients: number;
+    /** Whether samples use the full range, as almost all PNGs do, rather than video's narrow range. */
+    fullRange: boolean;
+}
+
+/** `eXIf`: Exif metadata, such as the camera and orientation, kept raw. */
+export interface PngExif {
+    /** Starts with a TIFF header; pass it to an Exif library to read the tags. */
+    data: Uint8Array;
+    byteOrder: "big-endian" | "little-endian";
+}
+
 /**
  * The known ancillary chunks, parsed. A field is absent if the image doesn't
  * have that chunk, or if it was invalid or misplaced and `strictAncillary` is off.
@@ -74,6 +103,9 @@ export interface PngMetadata {
     time?: PngTime;
     /** `tEXt`, `zTXt` and `iTXt`, in file order. A keyword may repeat. */
     text: PngText[];
+    iccProfile?: IccProfile;
+    cicp?: Cicp;
+    exif?: PngExif;
 }
 
 export type ChunkPosition = "before-palette" | "before-image-data" | "after-image-data";
@@ -159,6 +191,129 @@ export interface RgbaImage {
     chunks: PngChunk[];
 }
 
+/**
+ * Text to write as a `tEXt`, `zTXt` or `iTXt` chunk. A `PngText` from decoding
+ * works as it is.
+ */
+export interface PngTextInput {
+    /** 1 to 79 characters of printable Latin-1, for example "Title" or "Author". */
+    keyword: string;
+    /** Latin-1 only for `tEXt` and `zTXt`; any Unicode for `iTXt`. */
+    text: string;
+    /** Default "tEXt". `zTXt` is always compressed. */
+    chunkType?: PngText["chunkType"];
+    /** `iTXt` only: whether to zlib-compress the text. Default false. */
+    compressed?: boolean;
+    /** `iTXt` only, for example "en" or "nb-NO". */
+    languageTag?: string;
+    /** `iTXt` only: the keyword in that language. */
+    translatedKeyword?: string;
+}
+
+/** The metadata chunks to write. A `PngMetadata` from decoding works as it is. */
+export interface PngMetadataInput {
+    gamma?: number;
+    chromaticities?: Chromaticities;
+    srgb?: RenderingIntent;
+    physicalDimensions?: PhysicalDimensions;
+    time?: PngTime;
+    /** Written in order. */
+    text?: PngTextInput[];
+    /** The profile is given uncompressed; the encoder compresses it. */
+    iccProfile?: IccProfile;
+    cicp?: Cicp;
+    /** Its TIFF header is checked; `byteOrder` is read from it, so it can be left out. */
+    exif?: { data: Uint8Array; byteOrder?: PngExif["byteOrder"] };
+}
+
+/**
+ * An image to encode, in the PNG's own pixel format: rows top to bottom with
+ * each padded to a whole byte, 16-bit samples big-endian, pixels under 8 bits
+ * packed most significant bits first, and palette indices for indexed images.
+ */
+export interface PngImage {
+    header: PngHeader;
+    data: Uint8Array;
+    /** `PLTE`, as `[r, g, b]` entries. Indexed images need one; grayscale images must not have one. */
+    palette?: [number, number, number][];
+    /** `tRNS`. Images with an alpha channel must not have one. */
+    transparency?: PngTransparency;
+    metadata?: PngMetadataInput;
+    /** Raw ancillary chunks, written at their positions; see `EncodeOptions.keepUnsafeChunks`. */
+    chunks?: PngChunk[];
+}
+
+/**
+ * An image decoded in the file's own format by `decode`, without conversion:
+ * 16-bit samples stay 16-bit (big-endian bytes, as in the file), so passing it
+ * to `encode` writes the same pixels back.
+ */
+export interface RawImage extends PngImage {
+    /** Empty unless decoded with `preserveMetadata`. */
+    metadata: PngMetadata;
+    /** In file order. Empty unless decoded with `preserveChunks`. */
+    chunks: PngChunk[];
+}
+
+/** 8-bit RGBA pixels to encode. An `RgbaImage` from decoding, or an `ImageData`, works as it is. */
+export interface RgbaImageInput {
+    width: number;
+    height: number;
+    /** `width * height * 4` bytes, rows packed with no padding. */
+    data: Uint8Array | Uint8ClampedArray;
+    metadata?: PngMetadataInput;
+    chunks?: PngChunk[];
+    /** Write Adam7 interlaced. Default false. */
+    interlaced?: boolean;
+}
+
+export type FilterType = "none" | "sub" | "up" | "average" | "paeth";
+
+export interface EncodeOptions {
+    /** 0 (none) to 9 (smallest). Default 6. */
+    compression?: number;
+    /**
+     * The kind of DEFLATE blocks. "dynamic" (the default) gives the smallest
+     * files, "fixed" is a little faster, "stored" doesn't compress.
+     */
+    compressionStrategy?: "dynamic" | "fixed" | "stored";
+    /**
+     * How each row is filtered before compressing. "adaptive" (the default)
+     * picks a filter per row; the others use that filter for every row.
+     */
+    filter?: "adaptive" | FilterType;
+    /**
+     * Also write raw chunks that aren't safe to copy, such as `bKGD`, whose data
+     * depends on the pixels. Default false. Turn it on when re-encoding an image
+     * with its pixels, header and palette unchanged.
+     */
+    keepUnsafeChunks?: boolean;
+    /**
+     * "auto" writes 8-bit RGB and RGBA images with at most 256 colors, counting
+     * alpha, as indexed color at the smallest bit depth that fits. Lossless, and
+     * often several times smaller for logos, icons and screenshots; unsafe-to-copy
+     * chunks are then dropped, as they describe the old color type. Default "keep".
+     */
+    palette?: PaletteMode;
+    /** Which ancillary chunks to leave out to make the file smaller. Default "keep". */
+    strip?: StripChunks;
+}
+
+export type PaletteMode = "keep" | "auto";
+
+/**
+ * Which ancillary chunks the encoder leaves out. `tRNS` and an indexed image's
+ * palette are always kept.
+ *
+ * - "keep": write everything given.
+ * - "safe": keep what changes how the image looks: `cICP`, `iCCP`, `sRGB`,
+ *   `gAMA`, `cHRM` and `pHYs`. Drop text, `tIME`, `eXIf`, raw chunks and an
+ *   RGB image's suggested palette. Exif orientation is lost with it.
+ * - "all": keep nothing optional, for the smallest file. Colors may look
+ *   different in color-managed viewers such as browsers.
+ */
+export type StripChunks = "keep" | "safe" | "all";
+
 /** Thrown for malformed PNGs; `message` says what's wrong. */
 export class PngError extends Error {
     override name = "PngError";
@@ -169,8 +324,17 @@ let initialized = false;
 
 /**
  * Loads the WebAssembly module. Call it once before anything else; later calls
- * return the same promise. In browsers and bundlers, call it with no argument.
- * In Node, pass the `.wasm` file's bytes.
+ * return the same promise.
+ *
+ * In browsers and bundlers, call it with no argument: the `.wasm` file is
+ * fetched from next to this module. In Node, pass its bytes:
+ *
+ * ```js
+ * import { readFile } from "node:fs/promises";
+ * await init(await readFile(new URL(import.meta.resolve("format-png/format_png_wasm_bg.wasm"))));
+ * ```
+ *
+ * You can also pass a URL to fetch it from, or a compiled `WebAssembly.Module`.
  */
 export function init(source?: BufferSource | WebAssembly.Module | URL | string): Promise<void> {
     ready ??= initWasm(source === undefined ? undefined : { module_or_path: source })
@@ -243,6 +407,17 @@ function toMetadata(source: wasm.Metadata): PngMetadata {
 
     const t = source.time;
     if (t) metadata.time = { year: t[0], month: t[1], day: t[2], hour: t[3], minute: t[4], second: t[5] };
+
+    const profile = source.iccProfile;
+    if (profile) metadata.iccProfile = { name: source.iccProfileName!, profile };
+
+    const cicp = source.cicp;
+    if (cicp) {
+        metadata.cicp = { colorPrimaries: cicp[0], transferFunction: cicp[1], matrixCoefficients: cicp[2], fullRange: cicp[3] === 1 };
+    }
+
+    const exif = source.exif;
+    if (exif) metadata.exif = { data: exif, byteOrder: source.exifByteOrder as PngExif["byteOrder"] };
     return metadata;
 }
 
@@ -308,9 +483,7 @@ function toChunks(list: wasm.ChunkList, bytes: Uint8Array): PngChunks {
                 };
             }),
         };
-        if (palette) {
-            result.palette = Array.from({ length: palette.length / 3 }, (_, i) => [palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2]]);
-        }
+        if (palette) result.palette = toPalette(palette);
         if (transparencyKind && transparencyValues) result.transparency = toTransparency(transparencyKind, transparencyValues);
         return result;
     } finally {
@@ -326,6 +499,32 @@ function toImage(decoded: wasm.DecodedImage): RgbaImage {
     // A fresh ArrayBuffer, so viewing it as clamped bytes copies nothing.
     const data = new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.byteLength);
     return { width, height, data, metadata, chunks };
+}
+
+/** Turns a flat `r, g, b, …` array into `[r, g, b]` entries. */
+function toPalette(flat: Uint8Array): [number, number, number][] {
+    return Array.from({ length: flat.length / 3 }, (_, i) => [flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]]);
+}
+
+function toRawImage(decoded: wasm.RawImage): RawImage {
+    const header = toHeader(decoded.header());
+    const { palette, transparencyKind, transparencyValues } = decoded;
+    const metadata = takeMetadata(decoded);
+    const chunks = decoded.takeChunks().map(toChunk);
+    const data = decoded.intoData(); // copies out of wasm memory and frees `decoded`
+    const image: RawImage = { header, data, metadata, chunks };
+    if (palette) image.palette = toPalette(palette);
+    if (transparencyKind && transparencyValues) image.transparency = toTransparency(transparencyKind, transparencyValues);
+    return image;
+}
+
+/**
+ * Decodes a PNG in its own format, without conversion: every bit depth and
+ * color type as stored, with its palette and transparency. Pass the result to
+ * `encode` to re-encode it losslessly. Use `decodeRgba8` to display it.
+ */
+export function decode(bytes: Uint8Array, options: DecodeOptions = {}): RawImage {
+    return call(() => toRawImage(wasm.decode(bytes, ...decoderArgs(options))));
 }
 
 /** Decodes a PNG to 8-bit RGBA. Pass options to also read metadata or raw chunks. */
@@ -358,6 +557,86 @@ export function readHeader(bytes: Uint8Array): PngHeader {
     return call(() => toHeader(wasm.readHeader(bytes)));
 }
 
+function encoderArgs(options: EncodeOptions): [number, string, string, boolean, string, string] {
+    return [
+        options.compression ?? 6,
+        options.compressionStrategy ?? "dynamic",
+        options.filter ?? "adaptive",
+        options.keepUnsafeChunks ?? false,
+        options.palette ?? "keep",
+        options.strip ?? "keep",
+    ];
+}
+
+function toEncodeImage(image: PngImage): wasm.EncodeImage {
+    const { header, data, palette, transparency, metadata, chunks = [] } = image;
+    const target = new wasm.EncodeImage(header.width, header.height, header.bitDepth, header.colorType, header.interlaced, data);
+    try {
+        if (palette) target.setPalette(Uint8Array.from(palette.flat()));
+        if (transparency) {
+            const values = transparency.kind === "palette" ? transparency.alpha : transparency.kind === "gray" ? [transparency.value] : transparency.value;
+            target.setTransparency(transparency.kind, Uint16Array.from(values));
+        }
+        if (metadata) {
+            const { gamma, chromaticities: c, srgb, physicalDimensions: p, time: t, text = [], iccProfile, cicp, exif } = metadata;
+            if (cicp) target.setCicp(cicp.colorPrimaries, cicp.transferFunction, cicp.matrixCoefficients, cicp.fullRange);
+            if (iccProfile) target.setIccProfile(iccProfile.name, iccProfile.profile);
+            if (exif) target.setExif(exif.data);
+            if (gamma !== undefined) target.setGamma(gamma);
+            if (c) target.setChromaticities(new Float64Array([c.white.x, c.white.y, c.red.x, c.red.y, c.green.x, c.green.y, c.blue.x, c.blue.y]));
+            if (srgb) target.setSrgb(srgb);
+            if (p) target.setPhysicalDimensions(p.x, p.y, p.unit);
+            if (t) target.setTime(t.year, t.month, t.day, t.hour, t.minute, t.second);
+            for (const entry of text) {
+                target.addText(entry.chunkType ?? "tEXt", entry.keyword, entry.text, entry.languageTag ?? "", entry.translatedKeyword ?? "", entry.compressed ?? false);
+            }
+        }
+        for (const chunk of chunks) target.addChunk(chunk.type, chunk.data, chunk.position);
+        return target;
+    } catch (error) {
+        target.free();
+        throw error;
+    }
+}
+
+function rgbaToPngImage(image: RgbaImageInput): PngImage {
+    const { width, height, data, metadata, chunks, interlaced = false } = image;
+    return {
+        header: { width, height, bitDepth: 8, colorType: "rgba", interlaced },
+        // A view of the same bytes, so a Uint8ClampedArray isn't copied here.
+        data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+        metadata,
+        chunks,
+    };
+}
+
+/** Encodes `image`, then frees the wasm copy of it. */
+function encodeWith(image: PngImage, encode: (image: wasm.EncodeImage) => Uint8Array): Uint8Array {
+    const target = toEncodeImage(image);
+    try {
+        return encode(target);
+    } finally {
+        target.free();
+    }
+}
+
+/**
+ * Encodes an image in any PNG pixel format, with its palette, transparency,
+ * metadata and raw chunks.
+ */
+export function encode(image: PngImage, options: EncodeOptions = {}): Uint8Array {
+    return call(() => encodeWith(image, (target) => wasm.encode(target, ...encoderArgs(options))));
+}
+
+/**
+ * Encodes 8-bit RGBA pixels: the reverse of `decodeRgba8`. Pass a decoded
+ * `RgbaImage` to re-encode it with its metadata and chunks, or the `ImageData`
+ * of a canvas.
+ */
+export function encodeRgba8(image: RgbaImageInput, options: EncodeOptions = {}): Uint8Array {
+    return encode(rgbaToPngImage(image), options);
+}
+
 /** Wraps an image for `CanvasRenderingContext2D.putImageData`. Browser only. */
 export function toImageData(image: RgbaImage): ImageData {
     return new ImageData(image.data as Uint8ClampedArray<ArrayBuffer>, image.width, image.height);
@@ -378,9 +657,40 @@ export class PngDecoder {
         return call(() => toImage(this.#inner.decodeRgba8(bytes)));
     }
 
+    /** Like the `decode` function. */
+    decode(bytes: Uint8Array): RawImage {
+        return call(() => toRawImage(this.#inner.decode(bytes)));
+    }
+
     /** Like the `readChunks` function. Only the `validateCrc` and `strictAncillary` options apply. */
     readChunks(bytes: Uint8Array): PngChunks {
         return call(() => toChunks(this.#inner.readChunks(bytes), bytes));
+    }
+
+    free(): void {
+        this.#inner.free();
+    }
+}
+
+/**
+ * An encoder for many images: it keeps its compressor and buffers in wasm
+ * memory between calls. Call `free()` when you're done with it.
+ */
+export class PngEncoder {
+    #inner: wasm.Encoder;
+
+    constructor(options: EncodeOptions = {}) {
+        this.#inner = call(() => new wasm.Encoder(...encoderArgs(options)));
+    }
+
+    /** Like the `encode` function, with this encoder's options. */
+    encode(image: PngImage): Uint8Array {
+        return call(() => encodeWith(image, (target) => this.#inner.encode(target)));
+    }
+
+    /** Like the `encodeRgba8` function, with this encoder's options. */
+    encodeRgba8(image: RgbaImageInput): Uint8Array {
+        return this.encode(rgbaToPngImage(image));
     }
 
     free(): void {
