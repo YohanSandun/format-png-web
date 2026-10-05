@@ -22,11 +22,4 @@ npm test                  # the package's tests
 npm run dev -w demo       # the demo, at http://localhost:5173
 ```
 
-## Publish
-
-```sh
-cd packages/format-png
-npm publish
-```
-
 `prepublishOnly` rebuilds the package and runs the unit tests. It also runs `test:package`, which packs the package, installs the tarball into an empty project, and uses it from Node.
