@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: format-png-web
+    steps:
+      - name: Check out format-png-web
+        uses: actions/checkout@v5
+        with:
+          path: format-png-web
+
+      - uses: ./format-png-web/.github/actions/setup
+
+      - name: Clippy
+        run: cargo clippy -p format-png-wasm --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      # Packs the package, installs the tarball into an empty project, and uses
+      # it from Node: what someone installing it from npm gets.
+      - name: Test the packed package
+        run: npm run test:package -w format-png
+
+      - name: Build the demo
+        run: npm run build -w demo

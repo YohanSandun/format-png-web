@@ -1,0 +1,66 @@
+name: Set up the build
+description: >
+  Checks out the format-png crate next to this repository, and installs Rust
+  with the wasm32 target, wasm-bindgen-cli, Node and the npm dependencies.
+  Expects this repository to be checked out at `format-png-web`.
+
+inputs:
+  node-version:
+    description: The Node version to install.
+    default: '22'
+
+runs:
+  using: composite
+  steps:
+    # The bindings depend on the crate by path (../../../format-png), so both
+    # repositories are checked out side by side, as on a development machine.
+    # Pinned to a commit so CI and releases build the code that was tested;
+    # update it when the crate changes. This is format-png v0.1.1.
+    - name: Check out the format-png crate
+      uses: actions/checkout@v5
+      with:
+        repository: YohanSandun/format-png-rust
+        ref: c3eeaa9964f251de5f0c345d7ccb3bd65d5eb5cd
+        path: format-png
+
+    - name: Set up Rust
+      shell: bash
+      run: |
+        rustup toolchain install stable --profile minimal --component clippy --target wasm32-unknown-unknown
+        rustup default stable
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: format-png-web
+
+    # wasm-bindgen-cli must be exactly the version of the wasm-bindgen crate in Cargo.lock.
+    - name: Read the wasm-bindgen version
+      id: wasm-bindgen
+      shell: bash
+      working-directory: format-png-web
+      run: echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache wasm-bindgen-cli
+      id: cache-wasm-bindgen
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/wasm-bindgen
+        key: wasm-bindgen-cli-${{ steps.wasm-bindgen.outputs.version }}-${{ runner.os }}
+
+    - name: Install wasm-bindgen-cli
+      if: steps.cache-wasm-bindgen.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install wasm-bindgen-cli --version "${{ steps.wasm-bindgen.outputs.version }}" --locked
+
+    - name: Set up Node
+      uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: https://registry.npmjs.org
+        cache: npm
+        cache-dependency-path: format-png-web/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: format-png-web
+      run: npm ci

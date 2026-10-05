@@ -1,6 +1,6 @@
 {
   "name": "format-png",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A fast, lossless PNG decoder and encoder for the browser and Node, compiled from Rust to WebAssembly: every color type and bit depth, metadata, chunk inspection, palette optimization and chunk stripping.",
   "keywords": [
     "png",
@@ -39,6 +39,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "sideEffects": false,

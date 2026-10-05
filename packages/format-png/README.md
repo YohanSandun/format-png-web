@@ -1,5 +1,9 @@
 # format-png
 
+[![npm](https://img.shields.io/npm/v/format-png.svg)](https://www.npmjs.com/package/format-png)
+[![CI](https://github.com/YohanSandun/format-png-web/actions/workflows/ci.yml/badge.svg)](https://github.com/YohanSandun/format-png-web/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/YohanSandun/format-png-web/blob/main/LICENSE)
+
 A PNG decoder and encoder for the browser and Node, compiled from Rust to WebAssembly.
 
 - **Decodes every PNG:** every color type, bit depth from 1 to 16, and Adam7 interlacing. Decode to 8-bit RGBA for a canvas, or in the file's own format with nothing lost.
