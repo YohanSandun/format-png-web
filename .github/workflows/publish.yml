@@ -1,0 +1,123 @@
+# Publishes the format-png package to npm when a version tag is pushed:
+#
+#   git tag -a v0.1.0 -m "format-png 0.1.0" && git push origin v0.1.0
+#
+# The tag must match the version in packages/format-png/package.json. A
+# prerelease version, such as 0.2.0-beta.1, is published under the `next`
+# dist-tag, so `npm install format-png` keeps getting the latest stable one.
+#
+# Run it by hand from the Actions tab to do everything except publish: a dry run.
+#
+# Needs an `NPM_TOKEN` repository secret: an npm granular access token with
+# read and write access to the package.
+
+name: Publish to npm
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  # The format-png crate the bindings build against, from its own repository.
+  # Pinned to a commit so a release always builds the code that was tested;
+  # update it when the crate changes.
+  FORMAT_PNG_RUST_REPO: YohanSandun/format-png-rust
+  FORMAT_PNG_RUST_REF: dd4ab01ac609c7c9347f179ba6fc4dd67ff15a11
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance: links the published package to this workflow run
+    defaults:
+      run:
+        working-directory: format-png-web
+
+    steps:
+      # The bindings depend on the crate by path (../../../format-png), so both
+      # repositories are checked out side by side, as on a development machine.
+      - name: Check out format-png-web
+        uses: actions/checkout@v5
+        with:
+          path: format-png-web
+
+      - name: Check out the format-png crate
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.FORMAT_PNG_RUST_REPO }}
+          ref: ${{ env.FORMAT_PNG_RUST_REF }}
+          path: format-png
+
+      - name: Check the tag matches the package version
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(node -p "require('./packages/format-png/package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match package.json version ${version}; expected v${version}."
+            exit 1
+          fi
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+
+      # wasm-bindgen-cli must be exactly the version of the wasm-bindgen crate in Cargo.lock.
+      - name: Read the wasm-bindgen version
+        id: wasm-bindgen
+        run: echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache wasm-bindgen-cli
+        id: cache-wasm-bindgen
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-${{ steps.wasm-bindgen.outputs.version }}-${{ runner.os }}
+
+      - name: Install wasm-bindgen-cli
+        if: steps.cache-wasm-bindgen.outputs.cache-hit != 'true'
+        run: cargo install wasm-bindgen-cli --version "${{ steps.wasm-bindgen.outputs.version }}" --locked
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: format-png-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Test the packed package
+        run: npm run test:package -w format-png
+
+      # Build and tests already ran above, so prepublishOnly is skipped with
+      # --ignore-scripts rather than run a second time.
+      - name: Publish
+        working-directory: format-png-web/packages/format-png
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          dist_tag=latest
+          case "$version" in *-*) dist_tag=next ;; esac
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            npm publish --ignore-scripts --provenance --access public --tag "$dist_tag"
+          else
+            echo "Not a tag: dry run of format-png@${version} with dist-tag ${dist_tag}."
+            npm publish --ignore-scripts --dry-run --tag "$dist_tag"
+          fi
