@@ -23,3 +23,13 @@ npm run dev -w demo       # the demo, at http://localhost:5173
 ```
 
 `prepublishOnly` rebuilds the package and runs the unit tests. It also runs `test:package`, which packs the package, installs the tarball into an empty project, and uses it from Node.
+
+## Release
+
+Pushing a version tag publishes the package to npm through [`.github/workflows/publish.yml`](.github/workflows/publish.yml):
+
+```sh
+# Bump "version" in packages/format-png/package.json and commit it, then:
+git tag -a v0.1.1 -m "format-png 0.1.1"
+git push origin v0.1.1
+```
