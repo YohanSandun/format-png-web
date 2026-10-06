@@ -1,13 +1,25 @@
 # Changelog
 
-## 0.1.3
+## 0.2.0
 
-- The WebAssembly module is embedded in the package, and `init()` with no
-  argument uses it, in browsers, bundlers and Node alike. Nothing is fetched:
-  the package makes no network requests, and Vite no longer needs
-  `optimizeDeps.exclude`. Node no longer needs to read the `.wasm` file.
-- **Breaking:** `init` no longer takes a URL or string to fetch the module
-  from. Pass a `Response` instead, for example `init(fetch(url))`.
+The WebAssembly module is now embedded in the package, and `init()` with no
+argument uses it, in browsers, bundlers, Web Workers and Node alike. Nothing is
+fetched: the package makes no network requests.
+
+### Breaking
+
+- The `.wasm` file is no longer in the package, so the
+  `format-png/format_png_wasm_bg.wasm` export is gone.
+- `init` no longer takes a URL or string to fetch the module from. It still
+  takes a compiled `WebAssembly.Module`.
+
+### Upgrading
+
+- Node: replace `init(await readFile(...format_png_wasm_bg.wasm...))` with
+  `init()`.
+- Browsers and bundlers: `init()` keeps working as before. With Vite,
+  `optimizeDeps: { exclude: ["format-png"] }` is no longer needed.
+- If you passed a URL to `init`, call `init()` instead.
 
 ## 0.1.2
 

@@ -328,9 +328,9 @@ let initialized = false;
  * return the same promise.
  *
  * With no argument it uses the copy embedded in this package, in browsers,
- * bundlers and Node alike: nothing is fetched. You can instead pass the bytes
- * of `format-png/format_png_wasm_bg.wasm`, a compiled `WebAssembly.Module`, or
- * a `Response` for it (or a promise of one), to compile it while it downloads.
+ * bundlers and Node alike: nothing is fetched. You can instead pass a
+ * `WebAssembly.Module` compiled from it, for example one a page compiled once
+ * and posted to its workers.
  */
 export function init(source?: BufferSource | WebAssembly.Module | Response | Promise<Response>): Promise<void> {
     ready ??= initWasm({ module_or_path: source ?? decodeBase64(wasmBase64) })

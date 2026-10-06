@@ -1,8 +1,9 @@
 // Tests the package as users get it: packs it with `npm pack`, installs the
 // tarball into an empty project, and uses it from Node through its `exports`
 // only. Catches what unit tests can't: a file missing from `files`, a broken
-// `exports` entry, or a wasm file the glue can't find. Also checks that no
-// published JS calls fetch: the package makes no network requests.
+// `exports` entry, or an embedded module that doesn't load. Also checks that no
+// .wasm file is published and no published JS calls fetch: the package makes
+// no network requests.
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,6 +49,7 @@ console.log("format-png package OK");
 
     const installed = join(project, "node_modules", "format-png");
     for (const file of readdirSync(installed, { recursive: true })) {
+        if (file.endsWith(".wasm")) throw new Error(`${file} is published; the module should only be embedded`);
         if (file.endsWith(".js") && /\bfetch\s*\(/.test(readFileSync(join(installed, file), "utf8"))) {
             throw new Error(`${file} calls fetch; the package shouldn't make network requests`);
         }

@@ -29,11 +29,7 @@ import { init } from "format-png";
 await init();
 ```
 
-`init` also takes the module yourself: the bytes of `format-png/format_png_wasm_bg.wasm`, a compiled `WebAssembly.Module`, or a `Response` for the file, which compiles it while it downloads:
-
-```js
-await init(fetch(wasmUrl));
-```
+`init` also takes a compiled `WebAssembly.Module`, for example one a page compiled once and posted to its workers.
 
 ## Display a PNG
 
