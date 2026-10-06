@@ -21,6 +21,11 @@ fetched: the package makes no network requests.
   `optimizeDeps: { exclude: ["format-png"] }` is no longer needed.
 - If you passed a URL to `init`, call `init()` instead.
 
+### Other
+
+- The WebAssembly module is a third smaller (229 kB, down from 335 kB): it no
+  longer carries symbol names and debug info. Speed is unchanged.
+
 ## 0.1.2
 
 - Built against the `format-png` crate 0.1.1. The API and behavior are unchanged.

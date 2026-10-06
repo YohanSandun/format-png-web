@@ -2,8 +2,8 @@
 members = ["crates/format-png-wasm"]
 resolver = "3"
 
-# Profiles only take effect in the workspace root.
 [profile.release]
-opt-level = "s"     # smaller wasm
+opt-level = "s"
 lto = true
 codegen-units = 1
+strip = true
