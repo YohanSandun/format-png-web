@@ -298,6 +298,16 @@ export interface EncodeOptions {
     palette?: PaletteMode;
     /** Which ancillary chunks to leave out to make the file smaller. Default "keep". */
     strip?: StripChunks;
+    /**
+     * How the image data is compressed. "single" (the default here) compresses
+     * it as one stream: the smallest file. "auto" compresses it in independent
+     * 1 MiB segments, as the format-png crate's `Threads::Auto` does natively;
+     * the file is a little larger. A worker pool splits those segments across
+     * its workers, so its encoder defaults to "auto". WebAssembly has no
+     * threads, so on its own "auto" is no faster: use it to get the same bytes
+     * as a pool.
+     */
+    threads?: "single" | "auto";
 }
 
 export type PaletteMode = "keep" | "auto";
@@ -560,7 +570,7 @@ export function readHeader(bytes: Uint8Array): PngHeader {
     return call(() => toHeader(wasm.readHeader(bytes)));
 }
 
-function encoderArgs(options: EncodeOptions): [number, string, string, boolean, string, string] {
+function encoderArgs(options: EncodeOptions): [number, string, string, boolean, string, string, string] {
     return [
         options.compression ?? 6,
         options.compressionStrategy ?? "dynamic",
@@ -568,6 +578,7 @@ function encoderArgs(options: EncodeOptions): [number, string, string, boolean, 
         options.keepUnsafeChunks ?? false,
         options.palette ?? "keep",
         options.strip ?? "keep",
+        options.threads ?? "single",
     ];
 }
 
@@ -602,7 +613,8 @@ function toEncodeImage(image: PngImage): wasm.EncodeImage {
     }
 }
 
-function rgbaToPngImage(image: RgbaImageInput): PngImage {
+/** `image` as `encode` takes it. Internal: for the worker pool. */
+export function rgbaToPngImage(image: RgbaImageInput): PngImage {
     const { width, height, data, metadata, chunks, interlaced = false } = image;
     return {
         header: { width, height, bitDepth: 8, colorType: "rgba", interlaced },
@@ -684,6 +696,7 @@ export class PngEncoder {
 
     constructor(options: EncodeOptions = {}) {
         this.#inner = call(() => new wasm.Encoder(...encoderArgs(options)));
+        wasmEncoders.set(this, this.#inner);
     }
 
     /** Like the `encode` function, with this encoder's options. */
@@ -699,4 +712,38 @@ export class PngEncoder {
     free(): void {
         this.#inner.free();
     }
+}
+// Internal: for the worker pool, which splits one image's compression across
+// its workers. Not exported from index.ts.
+
+/** Each `PngEncoder`'s wasm encoder, for `prepare`. */
+const wasmEncoders = new WeakMap<PngEncoder, wasm.Encoder>();
+
+/**
+ * Everything `encoder.encode(image)` does except compress the image data,
+ * which is left in segments. Call `free()` on the result when done with it.
+ */
+export function prepare(encoder: PngEncoder, image: PngImage): wasm.Prepared {
+    const inner = wasmEncoders.get(encoder)!;
+    return call(() => {
+        const target = toEncodeImage(image);
+        try {
+            return inner.prepare(target);
+        } finally {
+            target.free();
+        }
+    });
+}
+
+/** Compresses one segment of a `Prepared`, with its `compressionLevel` and `compressionStrategy`. */
+export function compressSegment(segment: Uint8Array, level: number, strategy: string): Uint8Array {
+    return call(() => wasm.compressSegment(segment, level, strategy));
+}
+
+/** The PNG, from `prepared` and its segments compressed in order. `prepared` still needs `free()`. */
+export function finish(prepared: wasm.Prepared, compressed: Uint8Array[]): Uint8Array {
+    return call(() => {
+        for (const segment of compressed) prepared.pushCompressed(segment);
+        return prepared.finish();
+    });
 }

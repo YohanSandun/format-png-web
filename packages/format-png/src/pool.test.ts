@@ -152,7 +152,8 @@ describe("WorkerPool", () => {
         const { sent, createWorker } = recordingWorkers();
         pool = createWorkerPool({ size: 4, createWorker });
         const images = Array.from({ length: 4 }, (_, i) => noise(512, 512, i));
-        const jobs = images.map((image) => pool.encodeRgba8(image, { compression: 9 }));
+        // One worker each: "single", so the pool doesn't split them into segments.
+        const jobs = images.map((image) => pool.encodeRgba8(image, { compression: 9, threads: "single" }));
         // All four were sent, one to each of four workers, before any finished.
         expect(sent.map((ids) => ids.length)).toEqual([1, 1, 1, 1]);
         expect(await Promise.all(jobs)).toEqual(images.map((image) => encodeRgba8(image, { compression: 9 })));

@@ -99,6 +99,22 @@ describe("WorkerPool in the browser", () => {
         expect(longestGap).toBeLessThan(Math.max(150, elapsed / 3));
     });
 
+    it("splits a large image across the workers, with the same bytes as threads: \"auto\"", async () => {
+        // 1024x1024 RGBA: 4 MiB of filtered data, 5 segments.
+        const image = noise(1024, 1024, 21);
+        for (let i = 0; i < image.data.length; i++) image.data[i] = (image.data[i] >> 5) + (i % 4096) / 32; // smoother, faster
+        const expected = encodeRgba8(image, { threads: "auto" });
+        expect(expected).not.toEqual(encodeRgba8(image));
+        expect(await pool.encodeRgba8(image)).toEqual(expected);
+        expect(await pool.encodeRgba8(image, { threads: "single" })).toEqual(encodeRgba8(image));
+        const single = createWorkerPool({ size: 1 });
+        try {
+            expect(await single.encodeRgba8(image)).toEqual(expected);
+        } finally {
+            await single.terminate();
+        }
+    }, 60_000);
+
     it("runs the async functions without a pool", async () => {
         const image = await decodeRgba8Async(images.indexed);
         expect(image).toEqual(decodeRgba8(images.indexed));

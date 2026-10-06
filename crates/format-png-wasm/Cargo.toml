@@ -8,5 +8,5 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-format-png = "0.1"
+format-png = "0.2"
 wasm-bindgen = "=0.2.128"

@@ -12,7 +12,7 @@ A PNG decoder and encoder for the browser and Node, compiled from Rust to WebAss
 - **Writes metadata** back: color space, ICC profiles, Exif, text and your own chunks.
 - **Makes files smaller:** converts images with up to 256 colors to a palette, and strips the chunks you don't need, without changing a pixel.
 - **Runs off the main thread** with a built-in worker pool, so large images don't freeze the page.
-- **No dependencies.** About 130 kB packed, mostly the WebAssembly module. Ships with TypeScript types.
+- **No dependencies.** About 170 kB packed, mostly the WebAssembly module. Ships with TypeScript types.
 
 ## Install
 
@@ -53,7 +53,7 @@ canvas.getContext("2d").putImageData(toImageData(image), 0, 0);
 import { encodeRgba8 } from "format-png";
 
 const imageData = context.getImageData(0, 0, width, height);
-const png = encodeRgba8(imageData, { compression: 9 });
+const png = encodeRgba8(imageData, { compression: 6 }); // 6 is the default
 
 const blob = new Blob([png], { type: "image/png" });
 ```
@@ -96,7 +96,7 @@ import { decode, encode } from "format-png";
 const image = decode(bytes, { preserveMetadata: true, preserveChunks: true });
 const smaller = encode(
     { ...image, header: { ...image.header, interlaced: false } },
-    { compression: 9, palette: "auto", strip: "safe" },
+    { palette: "auto", strip: "safe" },
 );
 ```
 
@@ -138,7 +138,7 @@ const png = encodeRgba8({
 ```js
 import { PngEncoder } from "format-png";
 
-const encoder = new PngEncoder({ compression: 9, palette: "auto" });
+const encoder = new PngEncoder({ palette: "auto" });
 const pngs = frames.map((frame) => encoder.encodeRgba8(frame));
 encoder.free();
 ```
@@ -156,7 +156,7 @@ decodeRgba8Async(bytes).then((image) => {
     // the same RgbaImage as decodeRgba8(bytes)
 });
 
-const png = await encodeRgba8Async(imageData, { compression: 9 });
+const png = await encodeRgba8Async(imageData, { palette: "auto" });
 ```
 
 `decodeAsync`, `decodeRgba8Async`, `encodeAsync`, `encodeRgba8Async`, `readChunksAsync`, `readHeaderAsync` and `parseTextAsync` take the same arguments and options as the functions they're named after, resolve to the same results, and reject with the same `PngError`.
@@ -174,7 +174,7 @@ const pool = createWorkerPool(); // or { size: 4 }
 
 const image = await pool.decodeRgba8(bytes);
 const png = await pool.encodeRgba8(image, { palette: "auto" });
-const pngs = await Promise.all(frames.map((frame) => pool.encodeRgba8(frame, { compression: 9 })));
+const pngs = await Promise.all(frames.map((frame) => pool.encodeRgba8(frame)));
 
 await pool.terminate();
 ```
@@ -183,8 +183,25 @@ await pool.terminate();
 - **No `init()` needed.** Each worker loads the embedded WebAssembly module itself.
 - **Size.** By default, one worker per CPU core (`navigator.hardwareConcurrency`, or `os.availableParallelism()` in Node), at most 8.
 - **Lazy workers.** Creating a pool starts nothing. Workers start as jobs need them, up to `size`, and then stay alive between jobs, each keeping its own decoders and encoders, so a batch keeps their buffer reuse.
-- **A queue.** When every worker is busy, jobs wait and start in the order they were submitted.
+- **A queue.** When every worker is busy, jobs wait and start in the order they were submitted. A large image split across the workers takes turns with the jobs after it, so it doesn't hold them up.
 - **Node.** An idle pool doesn't keep the process alive, but call `terminate()` to free the workers' memory.
+
+### One large image, across all the workers
+
+Encoding a large image is mostly compression. A pool spreads one image's compression across its workers: one worker filters the image and splits the result into 1 MiB segments, all the workers compress segments, and the first worker joins them into the PNG. Images with more than 1 MiB of filtered data are split, which is about 512×512 RGBA and up; smaller ones are encoded whole on one worker.
+
+On a 2500×3800 photo-like image at the default level, in Node on a 20-core machine:
+
+| Workers | Time | Speedup |
+|---|---|---|
+| 1 | 7.8 s | 1.0× |
+| 2 | 4.3 s | 1.8× |
+| 4 | 2.7 s | 2.8× |
+| 8 | 2.0 s | 3.8× |
+
+Filtering and joining run on one worker, so the speedup levels off. Run `npm run bench:pool` in the repository to measure your machine.
+
+The segments are compressed independently, so the file is a little larger than one compressed as a single stream, about 0.1% for that photo. A split image's bytes are the same as `encode(image, { threads: "auto" })` gives on any thread, with any number of workers. For the smallest file, pass `threads: "single"`: the pool then encodes on one worker, with the same bytes as the sync `encode`.
 
 ### When to use which
 
@@ -210,11 +227,11 @@ bytes.byteLength; // 0: the buffer is detached as soon as decodeRgba8 is called
 
 ### Cancelling and errors
 
-Pass a `signal` to cancel a job. A queued job leaves the queue; a running one has its worker stopped and replaced, because WebAssembly can't be interrupted. The job rejects with `signal.reason`.
+Pass a `signal` to cancel a job. It rejects with `signal.reason` at once. A queued job leaves the queue. WebAssembly can't be interrupted, so a running job's worker is stopped and replaced, unless it holds an image another job is splitting: then the task finishes first, and its result is dropped.
 
 ```js
 const controller = new AbortController();
-const job = encodeRgba8Async(image, { compression: 9, signal: controller.signal });
+const job = encodeRgba8Async(image, { signal: controller.signal });
 controller.abort(); // job rejects with an AbortError
 ```
 
@@ -271,6 +288,9 @@ const pool = createWorkerPool({
 | `palette` | `"keep"`, `"auto"` | `"keep"` |
 | `strip` | `"keep"`, `"safe"`, `"all"` | `"keep"` |
 | `keepUnsafeChunks` | Also write raw chunks whose data depends on the pixels, such as `bKGD` and `sBIT`. Only when the pixels are unchanged. | `false` |
+| `threads` | `"single"`: compress the image data as one stream. `"auto"`: in independent 1 MiB segments, which a worker pool compresses in parallel; the file is a little larger. | `"single"`; `"auto"` in worker pools and the async functions |
+
+On photos, levels 7 to 9 are much slower than the default for very little gain (level 9 takes about twice as long for a file about 1% smaller), and levels 4 and 5 are several times faster for files 4 to 7% larger, which suits large photos. Smooth images and graphics gain more from higher levels, but take longer still: level 9 can be over 10 times slower.
 
 Every type is exported, and documented in the bundled `.d.ts` file.
 

@@ -52,10 +52,12 @@ describe("async functions", () => {
         expect(defaultWorkerPool()).toBe(pool);
         expect(pool.size).toBeLessThanOrEqual(8);
 
-        const pending = encodeRgba8Async({ width: 512, height: 512, data: new Uint8Array(512 * 512 * 4).fill(7) }, { compression: 9 });
+        const pending = encodeRgba8Async({ width: 512, height: 512, data: new Uint8Array(512 * 512 * 4).fill(7) }, { compression: 9 })
+            .catch((error: unknown) => error);
         await terminateDefaultWorkerPool();
-        await expect(pending).rejects.toMatchObject({ name: "WorkerPoolError", code: "terminated" });
-        await expect(pending).rejects.toBeInstanceOf(WorkerPoolError);
+        const error = await pending;
+        expect(error).toBeInstanceOf(WorkerPoolError);
+        expect(error).toMatchObject({ name: "WorkerPoolError", code: "terminated" });
 
         expect(await readHeaderAsync(fixture("valid/rgb_8.png"))).toEqual(readHeader(fixture("valid/rgb_8.png")));
         expect(defaultWorkerPool()).not.toBe(pool);

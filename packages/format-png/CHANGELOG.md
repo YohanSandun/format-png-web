@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.4.0
+
+Worker pools now encode one large image on all their workers, built on the
+format-png crate's new segment API.
+
+### Faster
+
+- A pool, and the async functions, compress a large image's data in 1 MiB
+  segments across all the workers. A 2500x3800 photo-like image at level 6,
+  in Node on a 20-core machine: 7.8 s on one worker, 4.3 s on two, 2.7 s on
+  four, 2.0 s on eight (3.8x). Images with 1 MiB of filtered data or less are
+  encoded whole, as before.
+- Jobs take turns: while a large image is split, other jobs still start as
+  soon as a worker is free, in the order they were submitted.
+
+### Changed
+
+- A pool's `encode` and `encodeRgba8`, and `encodeAsync` and
+  `encodeRgba8Async`, default to `threads: "auto"`. For large images the file
+  is a little larger (about 0.1% for that photo) and its bytes differ from the
+  sync `encode`'s. Pass `threads: "single"` for the sync function's bytes.
+- Cancelling a running job no longer stops its worker if that worker holds
+  an image another job is splitting: the task finishes, and its result is
+  dropped. The job still rejects at once.
+
+### Added
+
+- `threads` encode option: "single" (the default for the sync API) or
+  "auto", as the crate's `Threads`. In WebAssembly, "auto" isn't faster on its
+  own; it gives the same bytes as a pool.
+
+### Other
+
+- Built against the format-png crate 0.2.0 (from 0.1.1).
+- `npm run bench:pool` times a pool splitting one image, at several sizes.
+
 ## 0.3.0
 
 An async API that runs format-png in Web Workers, or worker_threads in Node,
@@ -30,6 +66,21 @@ so large images don't block the main thread. The sync API is unchanged.
 - `createWorker` option, for bundlers that don't bundle
   `new Worker(new URL(..., import.meta.url))`, such as esbuild and Rollup.
   Vite and webpack 5 need no setup.
+
+### Faster
+
+The WebAssembly module is now optimized for speed rather than size
+(`opt-level = 3`). Outputs are byte for byte the same. Measured with
+`npm run bench` in Node 22, on 2500x3800 RGBA images:
+
+| | Photo-like | Smooth |
+|---|---|---|
+| `decodeRgba8` | 304 → 195 ms (36% faster) | 137 → 72 ms (48% faster) |
+| Encode, level 6 | 7.3 → 7.1 s (3% faster) | 1.01 → 0.86 s (15% faster) |
+| Encode, level 9 | 16.5 → 16.0 s (3% faster) | 15.6 → 14.9 s (5% faster) |
+| Encode, filter "none" | 1.50 → 1.43 s (5% faster) | unchanged |
+
+The module is 261 kB, up from 229 kB, and the package is about 170 kB packed.
 
 ### Other
 

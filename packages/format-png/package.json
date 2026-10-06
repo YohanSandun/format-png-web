@@ -66,6 +66,8 @@
     "test": "vitest run --project node",
     "test:browser": "vitest run --project browser",
     "test:package": "node scripts/test-package.mjs",
+    "bench": "node scripts/bench.mjs",
+    "bench:pool": "node scripts/bench-pool.mjs",
     "prepublishOnly": "npm run build && npm test && npm run test:browser && npm run test:package"
   },
   "devDependencies": {

@@ -8,7 +8,8 @@ use format_png::png::metadata::{
 use format_png::png::{ChunkType, FilterType};
 use format_png::{
     ChunkPosition, ColorType, CompressionLevel, CompressionStrategy, FilterStrategy, ImageHeader, ImageRef,
-    Interlace, OwnedChunk, Palette, PaletteAlpha, PaletteMode, PixelFormat, StripChunks, Transparency,
+    Interlace, OwnedChunk, Palette, PaletteAlpha, PaletteMode, PixelFormat, PreparedPng, SegmentCompression,
+    StripChunks, Threads, Transparency,
 };
 use wasm_bindgen::prelude::*;
 
@@ -750,8 +751,9 @@ fn scaled(value: f64, what: &str) -> Result<u32, JsError> {
     Ok(scaled as u32)
 }
 
-/// Encodes an image with a one-off encoder.
+/// Encodes an image with a one-off encoder: the image, then `Encoder`'s options.
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments, reason = "the options are flattened for JavaScript, as in `Encoder::new`")]
 pub fn encode(
     image: &EncodeImage,
     compression: u8,
@@ -760,8 +762,36 @@ pub fn encode(
     keep_unsafe_chunks: bool,
     palette: &str,
     strip: &str,
+    threads: &str,
 ) -> Result<Vec<u8>, JsError> {
-    WasmEncoder::new(compression, compression_strategy, filter, keep_unsafe_chunks, palette, strip)?.encode(image)
+    WasmEncoder::new(compression, compression_strategy, filter, keep_unsafe_chunks, palette, strip, threads)?.encode(image)
+}
+
+/// `level` 0 to 9, as a `CompressionLevel`.
+fn parse_level(level: u8) -> Result<CompressionLevel, JsError> {
+    if level > 9 {
+        return Err(JsError::new(&format!("compression level {level} isn't 0 to 9")));
+    }
+    Ok(CompressionLevel::new(level))
+}
+
+/// "dynamic", "fixed" or "stored", as a `CompressionStrategy`.
+fn parse_strategy(name: &str) -> Result<CompressionStrategy, JsError> {
+    match name {
+        "dynamic" => Ok(CompressionStrategy::Dynamic),
+        "fixed" => Ok(CompressionStrategy::Fixed),
+        "stored" => Ok(CompressionStrategy::Stored),
+        _ => Err(JsError::new(&format!("{name} isn't a compression strategy"))),
+    }
+}
+
+/// The reverse of `parse_strategy`.
+fn compression_strategy_name(strategy: CompressionStrategy) -> &'static str {
+    match strategy {
+        CompressionStrategy::Fixed => "fixed",
+        CompressionStrategy::Stored => "stored",
+        _ => "dynamic",
+    }
 }
 
 /// An encoder that keeps its compressor and buffers between images.
@@ -774,7 +804,10 @@ pub struct WasmEncoder {
 impl WasmEncoder {
     /// `compression` is 0 to 9. `compressionStrategy` is "dynamic", "fixed" or
     /// "stored"; `filter` is "adaptive", "none", "sub", "up", "average" or
-    /// "paeth"; `palette` is "keep" or "auto"; `strip` is "keep", "safe" or "all".
+    /// "paeth"; `palette` is "keep" or "auto"; `strip` is "keep", "safe" or
+    /// "all"; `threads` is "single" or "auto". WebAssembly has no threads, so
+    /// "auto" compresses the image data in segments on this thread: the same
+    /// file as `format_png::Threads::Auto` writes natively.
     #[wasm_bindgen(constructor)]
     pub fn new(
         compression: u8,
@@ -783,16 +816,10 @@ impl WasmEncoder {
         keep_unsafe_chunks: bool,
         palette: &str,
         strip: &str,
+        threads: &str,
     ) -> Result<WasmEncoder, JsError> {
-        if compression > 9 {
-            return Err(JsError::new(&format!("compression level {compression} isn't 0 to 9")));
-        }
-        let compression_strategy = match compression_strategy {
-            "dynamic" => CompressionStrategy::Dynamic,
-            "fixed" => CompressionStrategy::Fixed,
-            "stored" => CompressionStrategy::Stored,
-            _ => return Err(JsError::new(&format!("{compression_strategy} isn't a compression strategy"))),
-        };
+        let compression = parse_level(compression)?;
+        let compression_strategy = parse_strategy(compression_strategy)?;
         let filter = match filter {
             "adaptive" => FilterStrategy::Adaptive,
             "none" => FilterStrategy::Fixed(FilterType::None),
@@ -813,13 +840,19 @@ impl WasmEncoder {
             "all" => StripChunks::All,
             _ => return Err(JsError::new(&format!("{strip} isn't a strip mode"))),
         };
+        let threads = match threads {
+            "single" => Threads::Single,
+            "auto" => Threads::Auto,
+            _ => return Err(JsError::new(&format!("{threads} isn't a threads mode"))),
+        };
         let options = format_png::EncodeOptions {
-            compression: CompressionLevel::new(compression),
+            compression,
             compression_strategy,
             filter,
             keep_unsafe_chunks,
             palette,
             strip,
+            threads,
         };
         Ok(Self { inner: format_png::Encoder::with_options(options) })
     }
@@ -827,4 +860,90 @@ impl WasmEncoder {
     pub fn encode(&mut self, image: &EncodeImage) -> Result<Vec<u8>, JsError> {
         Ok(self.inner.encode(image.image_ref())?)
     }
+
+    /// Everything `encode` does except compressing the image data, which is
+    /// left in segments to compress anywhere, such as in other Web Workers.
+    /// Always in segments, whatever `threads` says.
+    pub fn prepare(&mut self, image: &EncodeImage) -> Result<Prepared, JsError> {
+        let prepared = self.inner.prepare(image.image_ref())?;
+        Ok(Prepared {
+            segment_count: prepared.segment_count() as u32,
+            compression: prepared.compression(),
+            inner: Some(prepared),
+            compressed: Vec::new(),
+        })
+    }
+}
+
+/// An image from `Encoder.prepare`, waiting for its segments to be compressed.
+/// Copy each `segment(i)` out, compress it with `compressSegment`, pass the
+/// results to `pushCompressed` in segment order, then call `finish()`. Call
+/// `free()` when done with it, finished or not.
+#[wasm_bindgen]
+pub struct Prepared {
+    inner: Option<PreparedPng>,
+    segment_count: u32,
+    compression: SegmentCompression,
+    compressed: Vec<Vec<u8>>,
+}
+
+#[wasm_bindgen]
+impl Prepared {
+    /// 0 for images with 1 MiB of filtered data or less, which are already
+    /// encoded: call `finish()` for the PNG.
+    #[wasm_bindgen(getter, js_name = segmentCount)]
+    pub fn segment_count(&self) -> u32 {
+        self.segment_count
+    }
+
+    /// Segment `index`, copied out of WebAssembly memory.
+    pub fn segment(&self, index: u32) -> Result<Vec<u8>, JsError> {
+        let prepared = self.prepared()?;
+        if index >= self.segment_count {
+            return Err(JsError::new(&format!("segment {index} of {}", self.segment_count)));
+        }
+        Ok(prepared.segment(index as usize).to_vec())
+    }
+
+    /// The level to pass to `compressSegment`.
+    #[wasm_bindgen(getter, js_name = compressionLevel)]
+    pub fn compression_level(&self) -> u8 {
+        self.compression.level.get()
+    }
+
+    /// The strategy to pass to `compressSegment`: "dynamic", "fixed" or "stored".
+    #[wasm_bindgen(getter, js_name = compressionStrategy)]
+    pub fn compression_strategy(&self) -> String {
+        compression_strategy_name(self.compression.strategy).to_string()
+    }
+
+    /// Adds the next compressed segment, in segment order.
+    #[wasm_bindgen(js_name = pushCompressed)]
+    pub fn push_compressed(&mut self, segment: Vec<u8>) {
+        self.compressed.push(segment);
+    }
+
+    /// Joins the compressed segments into the PNG. Only once: afterwards the
+    /// other methods throw.
+    pub fn finish(&mut self) -> Result<Vec<u8>, JsError> {
+        let prepared = self.inner.take().ok_or_else(already_finished)?;
+        let compressed = std::mem::take(&mut self.compressed);
+        Ok(prepared.finish(&compressed)?)
+    }
+
+    fn prepared(&self) -> Result<&PreparedPng, JsError> {
+        self.inner.as_ref().ok_or_else(already_finished)
+    }
+}
+
+fn already_finished() -> JsError {
+    JsError::new("this prepared image was already finished")
+}
+
+/// Compresses one segment of a `Prepared`, with its `compressionLevel` and
+/// `compressionStrategy`. The same result in any WebAssembly instance.
+#[wasm_bindgen(js_name = compressSegment)]
+pub fn compress_segment(segment: &[u8], level: u8, strategy: &str) -> Result<Vec<u8>, JsError> {
+    let compression = SegmentCompression { level: parse_level(level)?, strategy: parse_strategy(strategy)? };
+    Ok(format_png::compress_segment(segment, compression))
 }

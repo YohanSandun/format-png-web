@@ -72,6 +72,10 @@ const job = pool.decodeRgba8(moved, { transfer: true });
 assert.equal(moved.byteLength, 0);
 assert.deepEqual((await job).data, decodeRgba8(png).data);
 
+// A large image is split across the workers: the same bytes as threads: "auto".
+const large = { width: 1024, height: 1024, data: Uint8Array.from({ length: 1024 * 1024 * 4 }, (_, i) => (i * 7 + (i >> 12)) % 256) };
+assert.deepEqual(await pool.encodeRgba8(large), encodeRgba8(large, { threads: "auto" }));
+
 await pool.terminate();
 await assert.rejects(pool.readHeader(png), WorkerPoolError);
 
