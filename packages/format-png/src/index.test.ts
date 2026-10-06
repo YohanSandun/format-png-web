@@ -8,7 +8,7 @@ const fixture = (name: string) =>
     readFileSync(new URL(`../../../../format-png/tests/data/${name}`, import.meta.url));
 
 beforeAll(async () => {
-    await init(readFileSync(new URL("./wasm/format_png_wasm_bg.wasm", import.meta.url)));
+    await init(); // the embedded module
 });
 
 describe("format-png", () => {

@@ -21,9 +21,7 @@ npm install format-png
 
 ## Load the module
 
-Call `init()` once before anything else.
-
-**Browsers and bundlers** (Vite, webpack, Rollup, esbuild): the `.wasm` file is fetched from next to the module.
+Call `init()` once before anything else. It works the same in browsers, bundlers (Vite, webpack, Rollup, esbuild), Web Workers and Node 20.6 and later: the WebAssembly module is embedded in the package, so nothing is fetched and no bundler setup is needed.
 
 ```js
 import { init } from "format-png";
@@ -31,23 +29,11 @@ import { init } from "format-png";
 await init();
 ```
 
-With Vite, exclude the package from dependency pre-bundling, so the module stays next to its `.wasm` file:
+`init` also takes the module yourself: the bytes of `format-png/format_png_wasm_bg.wasm`, a compiled `WebAssembly.Module`, or a `Response` for the file, which compiles it while it downloads:
 
 ```js
-// vite.config.js
-export default { optimizeDeps: { exclude: ["format-png"] } };
+await init(fetch(wasmUrl));
 ```
-
-**Node 20.6 and later**: pass the file's bytes.
-
-```js
-import { readFile } from "node:fs/promises";
-import { init } from "format-png";
-
-await init(await readFile(new URL(import.meta.resolve("format-png/format_png_wasm_bg.wasm"))));
-```
-
-`init` also takes a URL to fetch the module from, or a compiled `WebAssembly.Module`.
 
 ## Display a PNG
 

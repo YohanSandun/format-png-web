@@ -1,4 +1,5 @@
 import initWasm, * as wasm from "./wasm/format_png_wasm.js";
+import wasmBase64 from "./wasm/format_png_wasm_bg.wasm.base64.js";
 
 export type ColorType = "grayscale" | "rgb" | "indexed" | "grayscale-alpha" | "rgba";
 
@@ -326,18 +327,13 @@ let initialized = false;
  * Loads the WebAssembly module. Call it once before anything else; later calls
  * return the same promise.
  *
- * In browsers and bundlers, call it with no argument: the `.wasm` file is
- * fetched from next to this module. In Node, pass its bytes:
- *
- * ```js
- * import { readFile } from "node:fs/promises";
- * await init(await readFile(new URL(import.meta.resolve("format-png/format_png_wasm_bg.wasm"))));
- * ```
- *
- * You can also pass a URL to fetch it from, or a compiled `WebAssembly.Module`.
+ * With no argument it uses the copy embedded in this package, in browsers,
+ * bundlers and Node alike: nothing is fetched. You can instead pass the bytes
+ * of `format-png/format_png_wasm_bg.wasm`, a compiled `WebAssembly.Module`, or
+ * a `Response` for it (or a promise of one), to compile it while it downloads.
  */
-export function init(source?: BufferSource | WebAssembly.Module | URL | string): Promise<void> {
-    ready ??= initWasm(source === undefined ? undefined : { module_or_path: source })
+export function init(source?: BufferSource | WebAssembly.Module | Response | Promise<Response>): Promise<void> {
+    ready ??= initWasm({ module_or_path: source ?? decodeBase64(wasmBase64) })
         .then(() => {
             initialized = true;
         })
@@ -346,6 +342,13 @@ export function init(source?: BufferSource | WebAssembly.Module | URL | string):
             throw error;
         });
     return ready;
+}
+
+function decodeBase64(text: string): Uint8Array<ArrayBuffer> {
+    const binary = atob(text);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
 }
 
 function call<T>(fn: () => T): T {

@@ -23,7 +23,7 @@ npm install format-png
 ```js
 import { init, decodeRgba8, encodeRgba8, toImageData } from "format-png";
 
-await init(); // once, before anything else; see the docs for Node
+await init(); // once, before anything else
 
 // Show a PNG on a canvas.
 const bytes = new Uint8Array(await (await fetch("image.png")).arrayBuffer());

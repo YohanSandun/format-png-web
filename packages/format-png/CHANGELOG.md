@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3
+
+- The WebAssembly module is embedded in the package, and `init()` with no
+  argument uses it, in browsers, bundlers and Node alike. Nothing is fetched:
+  the package makes no network requests, and Vite no longer needs
+  `optimizeDeps.exclude`. Node no longer needs to read the `.wasm` file.
+- **Breaking:** `init` no longer takes a URL or string to fetch the module
+  from. Pass a `Response` instead, for example `init(fetch(url))`.
+
 ## 0.1.2
 
 - Built against the `format-png` crate 0.1.1. The API and behavior are unchanged.
