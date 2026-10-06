@@ -1,6 +1,7 @@
 import {
     PngEncoder,
-    decode,
+    WorkerPoolError,
+    createWorkerPool,
     decodeRgba8,
     encodeRgba8,
     init,
@@ -20,10 +21,11 @@ import {
     type PngTransparency,
     type PngImage,
     type RawImage,
+    type RgbaImage,
     type RgbaImageInput,
     type StripChunks,
+    type WorkerPool,
 } from "format-png";
-import type { WorkerRequest, WorkerResponse } from "./minimize-worker.ts";
 import "./style.css";
 
 await init();
@@ -959,87 +961,52 @@ function loadInto(input: HTMLInputElement, file: File) {
 
     const stripLevel = () => (stripInputs.find((input) => input.checked)?.value ?? "safe") as StripChunks;
 
-    /** Workers created so far, kept between runs so each loads the wasm module once. */
-    const pool: Worker[] = [];
-    /** Bumped on every run; workers tag their results with it, so late results of an earlier run are dropped. */
-    let poolRun = 0;
-    /** Rejects the run in progress, if any, with `Superseded`. */
-    let cancelRun: (() => void) | undefined;
-
-    class Superseded extends Error {}
-
     /**
-     * Terminates the workers past the first `count`. Wasm memory never shrinks,
-     * so a worker that encoded a large image holds on to that much until it's
-     * gone; terminating also stops one still busy with a superseded job.
+     * The workers that decode, encode and check images here, so the page stays
+     * responsive however large the image. Created again with fewer workers for
+     * a large image: wasm memory never shrinks, so a worker that encoded one
+     * holds on to that much until it's terminated.
      */
-    function trimPool(count: number) {
-        for (const worker of pool.splice(count)) worker.terminate();
+    let pool: WorkerPool | undefined;
+    /** Aborts the run in progress, if any: its queued jobs are dropped and its running ones stopped. */
+    let cancelRun: AbortController | undefined;
+
+    function poolOfSize(size: number): WorkerPool {
+        if (pool?.size !== size) {
+            void pool?.terminate();
+            pool = createWorkerPool({ size });
+        }
+        return pool;
     }
 
     /**
-     * Encodes `image` once per entry of `jobs` on up to `count` workers, giving
-     * each worker its next job as soon as it finishes one. Results are in the
-     * order of `jobs`. Rejects with `Superseded` if another run starts first;
-     * that run's workers finish the job they're on, then pick up the new run's.
+     * Encodes `image` once per entry of `jobs`, at most `count` at a time, each
+     * starting as soon as one finishes, so each one's time is its own. Results
+     * are in the order of `jobs`.
      */
-    function encodeInWorkers(
+    async function encodeInWorkers(
+        pool: WorkerPool,
         image: PngImage,
         jobs: EncodeOptions[],
         count: number,
+        signal: AbortSignal,
         onProgress: (done: number) => void,
     ): Promise<{ png: Uint8Array; elapsed: number }[]> {
-        cancelRun?.();
-        const run = ++poolRun;
-        while (pool.length < count) {
-            pool.push(new Worker(new URL("./minimize-worker.ts", import.meta.url), { type: "module" }));
-        }
-        const workers = pool.slice(0, Math.min(count, jobs.length));
-
-        return new Promise((resolve, reject) => {
-            const results: { png: Uint8Array; elapsed: number }[] = new Array(jobs.length);
-            let next = 0;
-            let done = 0;
-            const cleanups: (() => void)[] = [];
-
-            const finish = (settle: () => void) => {
-                for (const cleanup of cleanups) cleanup();
-                cancelRun = undefined;
-                settle();
-            };
-            cancelRun = () => finish(() => reject(new Superseded()));
-
-            const dispatch = (worker: Worker) => {
-                if (next >= jobs.length) return;
+        const results: { png: Uint8Array; elapsed: number }[] = new Array(jobs.length);
+        let next = 0;
+        let done = 0;
+        const lane = async () => {
+            while (next < jobs.length) {
                 const id = next++;
-                worker.postMessage({ kind: "job", run, id, options: jobs[id] } satisfies WorkerRequest);
-            };
-
-            for (const worker of workers) {
-                const onMessage = (event: MessageEvent<WorkerResponse>) => {
-                    const response = event.data;
-                    if (response.run !== run) return; // a job of an earlier run, finishing late
-                    if ("error" in response) return finish(() => reject(new Error(response.error)));
-
-                    results[response.id] = { png: response.png, elapsed: response.elapsed };
-                    onProgress(++done);
-                    if (done === jobs.length) return finish(() => resolve(results));
-                    dispatch(worker);
-                };
-                // Fires if the worker's script or the wasm module fails to load.
-                const onError = (event: ErrorEvent) => finish(() => reject(new Error(`worker failed: ${event.message || "couldn't load"}`)));
-                worker.addEventListener("message", onMessage);
-                worker.addEventListener("error", onError);
-                cleanups.push(() => {
-                    worker.removeEventListener("message", onMessage);
-                    worker.removeEventListener("error", onError);
-                });
-
-                // The pixels go to each worker once per run, not with every job.
-                worker.postMessage({ kind: "image", run, image } satisfies WorkerRequest);
-                dispatch(worker);
+                const start = performance.now();
+                // The pixels are copied for each job, so `image` stays usable.
+                const png = await pool.encode(image, { ...jobs[id], signal });
+                results[id] = { png, elapsed: performance.now() - start };
+                onProgress(++done);
             }
-        });
+        };
+        await Promise.all(Array.from({ length: Math.min(count, jobs.length) }, lane));
+        return results;
     }
 
     /**
@@ -1070,8 +1037,8 @@ function loadInto(input: HTMLInputElement, file: File) {
      * encoder converted 8-bit RGB or RGBA to a palette, and 8-bit RGBA, which
      * `decodeRgba8` gives exactly for those, must match.
      */
-    function samePixels(original: RawImage, originalBytes: Uint8Array, png: Uint8Array): boolean {
-        const copy = decode(png);
+    async function samePixels(pool: WorkerPool, original: RawImage, originalBytes: Uint8Array, png: Uint8Array, signal: AbortSignal): Promise<boolean> {
+        const copy = await pool.decode(png, { signal });
         const [a, b] = [original.header, copy.header];
         if (a.width !== b.width || a.height !== b.height) return false;
         if (a.colorType === b.colorType && a.bitDepth === b.bitDepth) {
@@ -1081,7 +1048,8 @@ function loadInto(input: HTMLInputElement, file: File) {
                 && json(palette(copy)) === json(palette(original))
                 && json(copy.transparency) === json(original.transparency);
         }
-        return sameBytes(decodeRgba8(png).data, decodeRgba8(originalBytes).data);
+        const [after, before] = await Promise.all([pool.decodeRgba8(png, { signal }), pool.decodeRgba8(originalBytes, { signal })]);
+        return sameBytes(after.data, before.data);
     }
 
     /** Each chunk type in `before` that `after` doesn't have, with how many there were and their size. */
@@ -1106,10 +1074,12 @@ function loadInto(input: HTMLInputElement, file: File) {
         bytes: Uint8Array,
         original: PngChunks,
         candidates: Candidate[],
+        best: Candidate,
         timing: { wall: number; workers: number; limited: boolean },
-        pixelsMatch: (png: Uint8Array) => boolean,
+        pixelsMatch: boolean,
+        decoded: RgbaImage,
     ) {
-        const best = candidates.reduce((a, b) => (b.png.length < a.png.length ? b : a));
+        // Only the chunks, not the pixels: fast enough for the page itself.
         const result = readChunks(best.png);
         const saved = bytes.length - best.png.length;
         const smaller = saved > 0;
@@ -1125,7 +1095,7 @@ function loadInto(input: HTMLInputElement, file: File) {
                 ["Format", format(result)],
                 ["Chunks", plural(result.chunks.length, "chunk")],
                 ["Encoding", `${best.palette === "auto" ? "palette allowed" : "no palette"}, ${best.filter} filter`],
-                ["Pixels", pixelCheck(pixelsMatch(best.png))],
+                ["Pixels", pixelCheck(pixelsMatch)],
             ]),
         );
 
@@ -1154,7 +1124,6 @@ function loadInto(input: HTMLInputElement, file: File) {
                 }),
         );
 
-        const decoded = decodeRgba8(best.png);
         canvas.width = decoded.width;
         canvas.height = decoded.height;
         canvas.getContext("2d")!.putImageData(toImageData(decoded), 0, 0);
@@ -1178,11 +1147,19 @@ function loadInto(input: HTMLInputElement, file: File) {
     async function minimize() {
         if (!current) return;
         const { file, bytes } = current;
+        cancelRun?.abort();
+        const run = (cancelRun = new AbortController());
+        const { signal } = run;
         output.hidden = true;
         try {
-            const original = readChunks(bytes);
-            // In the file's own format, so 16-bit samples and palettes come through exactly.
-            const decoded = decode(bytes, { preserveMetadata: true, preserveChunks: true });
+            // Decoding a large image takes a while too, so it's in a worker like the rest.
+            showStatus(status, `${file.name}: decoding…`);
+            let pool = poolOfSize(MAX_WORKERS);
+            const [original, decoded] = await Promise.all([
+                pool.readChunks(bytes, { signal }),
+                // In the file's own format, so 16-bit samples and palettes come through exactly.
+                pool.decode(bytes, { preserveMetadata: true, preserveChunks: true, signal }),
+            ]);
             // Adam7 almost always makes the file bigger. The samples are the whole image either way, so this is lossless.
             const image: PngImage = { ...decoded, header: { ...decoded.header, interlaced: false } };
             const strip = stripLevel();
@@ -1191,11 +1168,7 @@ function loadInto(input: HTMLInputElement, file: File) {
             const limited = parallel.checked && memoryCap < Math.min(MAX_WORKERS, todo.length);
             const workers = Math.min(parallel.checked ? MAX_WORKERS : 1, memoryCap, todo.length);
             workersLabel.textContent = limited ? `${memoryCap} of ${MAX_WORKERS}` : `${MAX_WORKERS}`;
-            // Workers past the cap, left from an earlier smaller image, still hold that image and their wasm memory.
-            if (memoryCap < pool.length) {
-                cancelRun?.();
-                trimPool(memoryCap);
-            }
+            pool = poolOfSize(Math.min(MAX_WORKERS, memoryCap));
             const on = limited
                 ? `${plural(workers, "worker")}, limited by the image's size (about ${formatBytes(workerMemory(image.data.length))} each)`
                 : plural(workers, "worker");
@@ -1205,15 +1178,25 @@ function loadInto(input: HTMLInputElement, file: File) {
             // The pixels are unchanged, so chunks that depend on them, such as bKGD and sBIT, stay valid. The
             // encoder still drops them when it converts to a palette, and stripping drops them anyway.
             const jobs = todo.map(({ compression, filter, palette }): EncodeOptions => ({ compression, filter, palette, strip, keepUnsafeChunks: true }));
-            const results = await encodeInWorkers(image, jobs, workers, (done) => {
+            const results = await encodeInWorkers(pool, image, jobs, workers, signal, (done) => {
                 showStatus(status, `${file.name}: encoding ${done} of ${todo.length} on ${on}…`);
             });
             const wall = performance.now() - start;
 
             const candidates = todo.map((plan, i): Candidate => ({ palette: plan.palette, filter: plan.filter, ...results[i] }));
-            render(file, bytes, original, candidates, { wall, workers, limited }, (png) => samePixels(decoded, bytes, png));
+            const best = candidates.reduce((a, b) => (b.png.length < a.png.length ? b : a));
+            showStatus(status, `${file.name}: checking the pixels…`);
+            const [pixelsMatch, preview] = await Promise.all([
+                samePixels(pool, decoded, bytes, best.png, signal),
+                pool.decodeRgba8(best.png, { signal }),
+            ]);
+            render(file, bytes, original, candidates, best, { wall, workers, limited }, pixelsMatch, preview);
         } catch (error) {
-            if (!(error instanceof Superseded)) showStatus(status, `${file.name}: ${errorMessage(error)}`, true);
+            // A newer run aborted this one, or replaced the pool it was using.
+            if (signal.aborted || (error instanceof WorkerPoolError && error.code === "terminated")) return;
+            showStatus(status, `${file.name}: ${errorMessage(error)}`, true);
+        } finally {
+            if (cancelRun === run) cancelRun = undefined;
         }
     }
 

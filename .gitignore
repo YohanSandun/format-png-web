@@ -3,4 +3,6 @@ node_modules/
 dist/
 packages/format-png/src/wasm/
 .idea/
-*.iml
+*.iml# Vitest browser mode: screenshots of failed tests
+__screenshots__/
+.vitest-attachments/

@@ -182,7 +182,8 @@
           <p>
             Makes a PNG as small as possible without changing a single pixel, 16-bit included: it strips the chunks
             you choose, converts images with at most 256 colors to a palette, and tries several encodings in parallel
-            Web Workers to keep the smallest.
+            to keep the smallest. Everything runs in format-png's worker pool, decoding included, so the page stays
+            responsive even for very large images.
           </p>
         </div>
         <label class="dropzone">

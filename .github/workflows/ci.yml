@@ -37,6 +37,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # The worker pool in Chromium, with Web Workers bundled by Vite.
+      - name: Install Chromium
+        run: npm exec -w format-png -- playwright install --with-deps chromium
+
+      - name: Test in a browser
+        run: npm run test:browser -w format-png
+
       # Packs the package, installs the tarball into an empty project, and uses
       # it from Node: what someone installing it from npm gets.
       - name: Test the packed package

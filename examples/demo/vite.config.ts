@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-    // Module workers, so the Minimize worker can import format-png like the page does.
+    // Module workers, as format-png's worker pool uses: its worker imports the rest of the package.
     worker: { format: "es" },
 });

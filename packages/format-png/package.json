@@ -1,6 +1,6 @@
 {
   "name": "format-png",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A fast, lossless PNG decoder and encoder for the browser and Node, compiled from Rust to WebAssembly: every color type and bit depth, metadata, chunk inspection, palette optimization and chunk stripping.",
   "keywords": [
     "png",
@@ -33,7 +33,18 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./worker.js": "./dist/worker.js",
     "./package.json": "./package.json"
+  },
+  "imports": {
+    "#spawn": {
+      "node": "./dist/spawn-node.js",
+      "default": "./dist/spawn-web.js"
+    },
+    "#port": {
+      "node": "./dist/port-node.js",
+      "default": "./dist/port-web.js"
+    }
   },
   "files": [
     "dist",
@@ -41,7 +52,9 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/worker.js"
+  ],
   "engines": {
     "node": ">=20.6"
   },
@@ -50,11 +63,16 @@
     "build:wasm": "cargo build -p format-png-wasm --release --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir src/wasm ../../target/wasm32-unknown-unknown/release/format_png_wasm.wasm && node scripts/inline-wasm.mjs",
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run clean && npm run build:wasm && npm run build:ts && node scripts/copy-wasm.mjs",
-    "test": "vitest run",
+    "test": "vitest run --project node",
+    "test:browser": "vitest run --project browser",
     "test:package": "node scripts/test-package.mjs",
-    "prepublishOnly": "npm run build && npm test && npm run test:package"
+    "prepublishOnly": "npm run build && npm test && npm run test:browser && npm run test:package"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@vitest/browser-playwright": "^4.1.11",
+    "esbuild": "^0.25.12",
+    "playwright": "^1.63.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }
