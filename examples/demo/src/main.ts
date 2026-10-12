@@ -2,8 +2,12 @@ import {
     PngEncoder,
     WorkerPoolError,
     createWorkerPool,
+    decodeAnimationRgba8Async,
     decodeRgba8,
+    encodeAnimation,
+    encodeAnimationRgba8Async,
     encodeRgba8,
+    frameDelayMs,
     init,
     parseText,
     pixelsPerInch,
@@ -12,15 +16,19 @@ import {
     toImageData,
     type Cicp,
     type EncodeOptions,
+    type FrameControl,
     type PhysicalDimensions,
     type PngChunks,
+    type PngFrame,
     type PngHeader,
     type PngRawChunk,
     type PngText,
     type PngTime,
     type PngTransparency,
     type PngImage,
+    type RawAnimation,
     type RawImage,
+    type RgbaAnimation,
     type RgbaImage,
     type RgbaImageInput,
     type StripChunks,
@@ -124,13 +132,22 @@ function setDownload(link: HTMLAnchorElement, bytes: Uint8Array, name: string) {
 /** `name` without its extension, plus `suffix`. */
 const renamed = (name: string, suffix: string) => `${name.replace(/\.[^.]*$/, "")}${suffix}`;
 
-/** Gives `input` the file `file`, as if the user had picked it, so its change handlers run. */
-function loadInto(input: HTMLInputElement, file: File) {
+/** Gives `input` the files `files`, as if the user had picked them, so its change handlers run. */
+function loadInto(input: HTMLInputElement, files: File | File[]) {
     const transfer = new DataTransfer();
-    transfer.items.add(file);
+    for (const file of [files].flat()) transfer.items.add(file);
     input.files = transfer.files;
     input.dispatchEvent(new Event("change"));
 }
+
+/** Shows the tab named `name`, as clicking it does. */
+const showTab = (name: string) => void (location.hash = `#${name}`);
+
+/** "plays forever" or "plays N times", from an `acTL` chunk's number of plays. */
+const playsText = (numPlays: number) => (numPlays === 0 ? "forever" : plural(numPlays, "time"));
+
+/** A frame's delay, for example "100 ms". */
+const delayText = (frame: { delayNum: number; delayDen: number }) => `${+frameDelayMs(frame).toFixed(1)} ms`;
 
 // Tabs: one panel per feature, the selected one kept in the URL's hash so it survives a reload and can be linked.
 {
@@ -182,8 +199,8 @@ function loadInto(input: HTMLInputElement, file: File) {
             event.preventDefault();
             depth = 0;
             zone.classList.remove("dragging");
-            const file = event.dataTransfer?.files[0];
-            if (file) loadInto(input, file);
+            const files = [...(event.dataTransfer?.files ?? [])];
+            if (files.length > 0) loadInto(input, input.multiple ? files : files[0]);
         });
     }
     window.addEventListener("dragover", (event) => event.preventDefault());
@@ -297,11 +314,90 @@ function loadInto(input: HTMLInputElement, file: File) {
         return new File([png as Uint8Array<ArrayBuffer>], "sample-bloated.png", { type: "image/png" });
     }
 
+    /** `width × height` RGBA pixels of a soft-edged ellipse of `color`, transparent around it. */
+    function ellipse(width: number, height: number, color: number[]): Uint8Array {
+        const data = new Uint8Array(width * height * 4);
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const d = Math.hypot((x + 0.5 - width / 2) / (width / 2), (y + 0.5 - height / 2) / (height / 2));
+                const alpha = Math.max(0, Math.min(1, (1 - d) * Math.min(width, height) / 2));
+                const light = 1 - 0.35 * Math.hypot((x - width * 0.35) / width, (y - height * 0.3) / height);
+                data.set([color[0] * light, color[1] * light, color[2] * light, alpha * 255], (y * width + x) * 4);
+            }
+        }
+        return data;
+    }
+
+    /**
+     * A 160×120 bouncing ball, written with `encodeAnimation` the way an
+     * editor would: the first frame is the whole scene, and each later frame
+     * is only the ball, blended over it and put back afterwards (`dispose:
+     * "previous"`), so the background is stored once.
+     */
+    function animatedSample(): File {
+        const width = 160;
+        const height = 120;
+        const ground = 100;
+        const scene = new Uint8Array(width * height * 4);
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const sky = [110 + y, 170 + y / 2, 245, 255];
+                const grass = [70 + ((x * 7 + y * 3) % 9), 150 + ((x + y) % 7), 80, 255];
+                scene.set(y < ground ? sky : grass, (y * width + x) * 4);
+            }
+        }
+        const frames: PngFrame[] = [{ data: scene, delayNum: 1, delayDen: 25 }];
+        const steps = 20;
+        for (let i = 0; i < steps; i++) {
+            const t = i / steps;
+            const bounce = Math.abs(Math.sin(Math.PI * t * 2)); // two bounces across the scene
+            const squash = bounce < 0.15 ? 1 - (0.15 - bounce) * 2 : 1; // flattened as it lands
+            const w = Math.round(22 / squash);
+            const h = Math.round(22 * squash);
+            const x = Math.round(8 + t * (width - 40));
+            const y = Math.round(ground - h - bounce * 70);
+            frames.push({ data: ellipse(w, h, [235, 70, 60]), width: w, height: h, x, y, delayNum: 1, delayDen: 25, blend: "over", dispose: "previous" });
+        }
+        const png = encodeAnimation({
+            header: { width, height, bitDepth: 8, colorType: "rgba", interlaced: false },
+            frames,
+            metadata: { text: [{ keyword: "Title", text: "format-png bouncing ball" }] },
+        });
+        return new File([png as Uint8Array<ArrayBuffer>], "sample-animation.png", { type: "image/png" });
+    }
+
+    /** Twelve 120×120 PNGs of a turning pinwheel, as frames to make an animation from. */
+    function sampleFrames(): File[] {
+        const size = 120;
+        const colors = [[239, 68, 68], [245, 158, 11], [16, 185, 129], [59, 130, 246]];
+        return Array.from({ length: 12 }, (_, frame) => {
+            const data = new Uint8Array(size * size * 4);
+            for (let y = 0; y < size; y++) {
+                for (let x = 0; x < size; x++) {
+                    const dx = x + 0.5 - size / 2;
+                    const dy = y + 0.5 - size / 2;
+                    const r = Math.hypot(dx, dy);
+                    const angle = (Math.atan2(dy, dx) / (2 * Math.PI) + 1 + frame / 48) % 1;
+                    const color = r < 6 ? [60, 60, 70] : r < 52 ? colors[Math.floor(angle * 8) % 4] : [250, 248, 240];
+                    data.set([...color, 255], (y * size + x) * 4);
+                }
+            }
+            const png = encodeRgba8({ width: size, height: size, data });
+            const name = `pinwheel-${String(frame + 1).padStart(2, "0")}.png`;
+            return new File([png as Uint8Array<ArrayBuffer>], name, { type: "image/png" });
+        });
+    }
+
+    const samples: Record<string, () => File | File[]> = {
+        "minimize-input": bloatedSample,
+        "animation-input": animatedSample,
+        "create-input": sampleFrames,
+    };
     for (const button of document.querySelectorAll<HTMLButtonElement>("[data-sample]")) {
         button.addEventListener("click", (event) => {
             event.preventDefault(); // don't also open the file picker of the drop zone around it
             const input = element<HTMLInputElement>(button.dataset.sample!);
-            loadInto(input, input.id === "minimize-input" ? bloatedSample() : gradientSample());
+            loadInto(input, (samples[input.id] ?? gradientSample)());
         });
     }
 }
@@ -350,6 +446,20 @@ function loadInto(input: HTMLInputElement, file: File) {
             canvas.hidden = false;
             const zoomNote = zoom > 1 ? `, shown at ${Math.round(zoom * 100)}%` : "";
             showStatus(status, `${file.name}: ${image.width}×${image.height} decoded to RGBA in ${elapsed.toFixed(1)} ms${zoomNote}`);
+
+            // decodeRgba8 reads an APNG's default image only; the Animation tab plays every frame.
+            const { animationControl } = readChunks(bytes);
+            if (animationControl) {
+                const play = document.createElement("button");
+                play.type = "button";
+                play.className = "link";
+                play.textContent = "play it in the Animation tab";
+                play.addEventListener("click", () => {
+                    loadInto(element("animation-input"), file);
+                    showTab("animation");
+                });
+                status.append(`. This is an animated PNG of ${plural(animationControl.numFrames, "frame")}, shown as its default image: `, play);
+            }
         } catch (error) {
             showStatus(status, `${file.name}: ${errorMessage(error)}`, true);
         }
@@ -395,7 +505,8 @@ function loadInto(input: HTMLInputElement, file: File) {
     const CATEGORIES = {
         structure: "Structure (IHDR, IEND)",
         palette: "Palette and transparency",
-        data: "Image data (IDAT)",
+        data: "Image data (IDAT, fdAT)",
+        animation: "Animation (acTL, fcTL)",
         metadata: "Color and metadata",
         text: "Text",
         unknown: "Unknown",
@@ -411,7 +522,11 @@ function loadInto(input: HTMLInputElement, file: File) {
             case "tRNS":
                 return "palette";
             case "IDAT":
+            case "fdAT":
                 return "data";
+            case "acTL":
+            case "fcTL":
+                return "animation";
             case "tEXt":
             case "zTXt":
             case "iTXt":
@@ -449,7 +564,8 @@ function loadInto(input: HTMLInputElement, file: File) {
             chunk.critical
                 ? badge("critical", "Uppercase 1st letter: needed to display the image", "critical")
                 : badge("ancillary", "Lowercase 1st letter: decoders may ignore it"),
-            !chunk.public && badge("private", "Lowercase 2nd letter: application-specific", "private"),
+            // APNG's acTL, fcTL and fdAT keep the lowercase 2nd letter they had before PNG's 3rd edition registered them.
+            !chunk.public && !chunk.known && badge("private", "Lowercase 2nd letter: application-specific", "private"),
             !chunk.critical && chunk.safeToCopy && badge("safe to copy", "Lowercase 4th letter: editors may keep it after changing the image"),
             !chunk.known && badge("unknown", "format-png doesn't parse this chunk type", "unknown"),
         );
@@ -475,6 +591,20 @@ function loadInto(input: HTMLInputElement, file: File) {
                 return `${rgb(transparency.value)} is transparent`;
             case "IDAT":
                 return "zlib-compressed image data";
+            case "acTL":
+                return first && png.animationControl
+                    ? `animated: ${plural(png.animationControl.numFrames, "frame")}, plays ${playsText(png.animationControl.numPlays)}`
+                    : "ignored: the animation chunks are broken, so this reads as a still image";
+            case "fcTL": {
+                // The frame's sequence number starts its data: find its parsed control by it.
+                const sequence = new DataView(chunk.data.buffer, chunk.data.byteOffset, chunk.data.byteLength).getUint32(0);
+                const frame = png.frameControls.findIndex((c) => c.sequenceNumber === sequence);
+                if (frame < 0) return "ignored: the animation chunks are broken";
+                const c = png.frameControls[frame];
+                return `frame ${frame + 1}: ${c.width}×${c.height} at ${c.x}, ${c.y}, ${delayText(c)}, dispose ${c.dispose}, blend ${c.blend}`;
+            }
+            case "fdAT":
+                return "zlib-compressed frame data";
             case "IEND":
                 return "end of image";
             case "gAMA":
@@ -533,12 +663,12 @@ function loadInto(input: HTMLInputElement, file: File) {
     // A chunk takes 12 bytes besides its data: length, type and CRC.
     const chunkSize = (chunk: PngRawChunk) => chunk.data.length + 12;
 
-    /** Chunks in file order, with runs of IDAT grouped so a file split into many doesn't flood the view. */
+    /** Chunks in file order, with runs of IDAT or fdAT grouped so a file split into many doesn't flood the view. */
     function groups(chunks: PngRawChunk[]): { index: number; chunks: PngRawChunk[] }[] {
         const result: { index: number; chunks: PngRawChunk[] }[] = [];
         chunks.forEach((chunk, index) => {
             const last = result.at(-1);
-            if (chunk.type === "IDAT" && last?.chunks[0].type === "IDAT") last.chunks.push(chunk);
+            if ((chunk.type === "IDAT" || chunk.type === "fdAT") && last?.chunks[0].type === chunk.type) last.chunks.push(chunk);
             else result.push({ index, chunks: [chunk] });
         });
         // Split short IDAT runs back into single chunks.
@@ -619,9 +749,30 @@ function loadInto(input: HTMLInputElement, file: File) {
         if (m.time) color.push(["Modified", time(m.time)]);
         if (m.exif) color.push(["Exif", `${formatBytes(m.exif.data.length)}, ${m.exif.byteOrder}`]);
 
+        let animation: HTMLElement | false = false;
+        if (png.animationControl) {
+            const frames = png.frameControls;
+            const frameData = png.chunks.filter((c) => c.type === "fdAT").reduce((sum, c) => sum + c.data.length - 4, 0); // less each sequence number
+            // The default image is the first frame when an fcTL comes before the IDAT chunks.
+            const types = png.chunks.map((c) => c.type);
+            const defaultIsFrame = types.indexOf("fcTL") < types.indexOf("IDAT");
+            const play = h("button", { className: "link", onClick: () => (loadInto(element("animation-input"), current!.file), showTab("animation")) }, "Play it");
+            animation = card(
+                "Animation",
+                definitions([
+                    ["Frames", `${frames.length}; the default image ${defaultIsFrame ? "is the first frame" : "is separate"}`],
+                    ["Plays", playsText(png.animationControl.numPlays)],
+                    ["Duration", `${(frames.reduce((sum, c) => sum + frameDelayMs(c), 0) / 1000).toFixed(2)} s per play`],
+                    ["Frame data", `${formatBytes(frameData)} in fdAT chunks`],
+                    ["", play],
+                ]),
+            );
+        }
+
         cards.replaceChildren(
             ...[
                 card("Image", definitions(image)),
+                animation,
                 color.length > 0 && card("Color and metadata", definitions(color)),
                 palette && card(`Palette, ${plural(palette.length, "color")}`, paletteGrid(palette, transparency)),
                 m.text.length > 0 && card(`Text, ${plural(m.text.length, "entry", "entries")}`, textList(m.text)),
@@ -693,7 +844,7 @@ function loadInto(input: HTMLInputElement, file: File) {
                     h("td", {}, flags(chunk)),
                     h("td", { className: "num" }, formatBytes(size)),
                     h("td", { className: "mono" }, run ? "" : hex(chunk.crc, 8)),
-                    h("td", { className: "contents" }, run ? `zlib-compressed image data, split over ${chunks.length} chunks` : summary(png, chunk, index)),
+                    h("td", { className: "contents" }, run ? `zlib-compressed ${chunk.type === "fdAT" ? "frame" : "image"} data, split over ${chunks.length} chunks` : summary(png, chunk, index)),
                 ) as HTMLTableRowElement;
 
                 const open = () => {
@@ -743,6 +894,338 @@ function loadInto(input: HTMLInputElement, file: File) {
     strict.addEventListener("change", render);
 }
 
+// Animation: play an APNG frame by frame, show how each frame is stored, and re-encode it smaller.
+{
+    const MIN_PREVIEW_SIZE = 240;
+
+    const status = element<HTMLParagraphElement>("animation-status");
+    const output = element<HTMLDivElement>("animation-output");
+    const canvas = element<HTMLCanvasElement>("animation-canvas");
+    const context = canvas.getContext("2d")!;
+    const playButton = element<HTMLButtonElement>("animation-play");
+    const prevButton = element<HTMLButtonElement>("animation-prev");
+    const nextButton = element<HTMLButtonElement>("animation-next");
+    const scrub = element<HTMLInputElement>("animation-scrub");
+    const frameLabel = element<HTMLOutputElement>("animation-frame");
+    const showAreas = element<HTMLInputElement>("animation-areas");
+    const cards = element<HTMLDivElement>("animation-cards");
+    const framesBody = element<HTMLTableElement>("animation-frames").tBodies[0];
+    const optimizeButton = element<HTMLButtonElement>("animation-optimize");
+    const download = element<HTMLAnchorElement>("animation-download");
+
+    interface Loaded {
+        file: File;
+        bytes: Uint8Array;
+        animation: RgbaAnimation;
+        /** Each frame's fcTL, read with readChunks: where it was drawn, before compositing. */
+        controls: FrameControl[];
+        /** Each frame as the viewer shows it, ready for putImageData. */
+        images: ImageData[];
+        rows: HTMLTableRowElement[];
+    }
+
+    let current: Loaded | undefined;
+    let index = 0;
+    let plays = 0;
+    let timer: number | undefined;
+    /** Bumped for each file, so work for an older one is dropped when it finishes. */
+    let generation = 0;
+    let optimizedCard: HTMLElement | undefined;
+
+    function draw() {
+        if (!current) return;
+        const { animation, controls, images, rows } = current;
+        context.putImageData(images[index], 0, 0);
+        if (showAreas.checked) {
+            // Outline the frame's own area: what the file stores for it.
+            const c = controls[index];
+            const line = Math.max(1, Math.round(animation.width / 200));
+            context.save();
+            context.lineWidth = line;
+            context.setLineDash([line * 3, line * 2]);
+            context.strokeStyle = "#ff1493";
+            context.strokeRect(c.x + line / 2, c.y + line / 2, c.width - line, c.height - line);
+            context.restore();
+        }
+        scrub.value = String(index);
+        frameLabel.value = `${index + 1} / ${images.length} · ${delayText(animation.frames[index])}`;
+        rows.forEach((row, i) => row.classList.toggle("current", i === index));
+    }
+
+    function pause() {
+        clearTimeout(timer);
+        timer = undefined;
+        playButton.textContent = "Play";
+    }
+
+    /** Shows each frame for its delay, then the next, and stops after the animation's number of plays. */
+    function play() {
+        if (!current) return;
+        const { numPlays } = current.animation;
+        if (numPlays > 0 && plays >= numPlays) {
+            plays = 0; // played out: start again
+            index = 0;
+            draw();
+        }
+        playButton.textContent = "Pause";
+        const step = () => {
+            if (!current) return;
+            // Browsers show frames for at least about 10 ms; 0 would spin.
+            timer = window.setTimeout(() => {
+                if (!current) return;
+                if (index === current.images.length - 1) {
+                    plays++;
+                    if (numPlays > 0 && plays >= numPlays) return pause();
+                    index = 0;
+                } else {
+                    index++;
+                }
+                draw();
+                step();
+            }, Math.max(10, frameDelayMs(current.animation.frames[index])));
+        };
+        step();
+    }
+
+    function goTo(frame: number) {
+        if (!current) return;
+        pause();
+        index = (frame + current.images.length) % current.images.length;
+        draw();
+    }
+
+    /** Each frame's compressed size: the IDAT or fdAT chunks after its fcTL, less each fdAT's sequence number. */
+    function frameSizes(png: PngChunks): number[] {
+        const sizes: number[] = [];
+        for (const chunk of png.chunks) {
+            if (chunk.type === "fcTL") sizes.push(0);
+            else if (sizes.length > 0 && chunk.type === "IDAT") sizes[sizes.length - 1] += chunk.data.length;
+            else if (sizes.length > 0 && chunk.type === "fdAT") sizes[sizes.length - 1] += chunk.data.length - 4;
+        }
+        return sizes;
+    }
+
+    function frameRows(controls: FrameControl[], sizes: number[]): HTMLTableRowElement[] {
+        return controls.map((c, i) => {
+            const whole = c.x === 0 && c.y === 0 && c.width === current?.animation.width && c.height === current?.animation.height;
+            const area = `${c.width}×${c.height}${whole ? ", whole canvas" : ` at ${c.x}, ${c.y}`}`;
+            const row = fieldRow([`${i + 1}`, area, delayText(c), c.dispose, c.blend, formatBytes(sizes[i] ?? 0)]);
+            for (const cell of [row.cells[0], row.cells[2], row.cells[5]]) cell.className = "num";
+            row.addEventListener("click", () => goTo(i));
+            return row;
+        });
+    }
+
+    onFile(element("animation-input"), async (file, bytes) => {
+        const run = ++generation;
+        pause();
+        current = undefined;
+        output.hidden = true;
+        download.hidden = true;
+        optimizedCard = undefined;
+        try {
+            const png = readChunks(bytes); // fast: no pixels
+            if (!png.animationControl) throw new Error("this PNG isn't animated: it has no acTL chunk. Try the sample, or make one below.");
+            showStatus(status, `${file.name}: decoding ${plural(png.animationControl.numFrames, "frame")} in a worker…`);
+            const start = performance.now();
+            const animation = await decodeAnimationRgba8Async(bytes);
+            const elapsed = performance.now() - start;
+            if (run !== generation) return;
+
+            const { width, height, frames, numPlays } = animation;
+            const images = frames.map((frame) => new ImageData(frame.data as Uint8ClampedArray<ArrayBuffer>, width, height));
+            current = { file, bytes, animation, controls: png.frameControls, images, rows: [] };
+            current.rows = frameRows(png.frameControls, frameSizes(png));
+            framesBody.replaceChildren(...current.rows);
+
+            canvas.width = width;
+            canvas.height = height;
+            const zoom = Math.max(1, MIN_PREVIEW_SIZE / Math.min(width, height));
+            canvas.style.width = zoom > 1 ? `${Math.round(width * zoom)}px` : "";
+            scrub.max = String(frames.length - 1);
+
+            const duration = frames.reduce((sum, frame) => sum + frameDelayMs(frame), 0);
+            const { colorType, bitDepth } = png.header;
+            cards.replaceChildren(
+                infoCard("Animation", [
+                    ["Canvas", `${width} × ${height} px`],
+                    ["Frames", `${frames.length}`],
+                    ["Plays", playsText(numPlays)],
+                    ["Duration", `${(duration / 1000).toFixed(2)} s per play`],
+                    ["Format", `${colorType}, ${bitDepth}-bit${png.palette ? `, ${png.palette.length} colors` : ""}`],
+                ]),
+                infoCard("File", [
+                    ["File", file.name],
+                    ["Size", formatBytes(bytes.length)],
+                    ["As RGBA frames", `${formatBytes(frames.length * width * height * 4)}, ${((frames.length * width * height * 4) / bytes.length).toFixed(0)}× larger`],
+                    ["Decoded in", `${elapsed.toFixed(1)} ms, in a worker`],
+                ]),
+            );
+
+            index = 0;
+            plays = 0;
+            output.hidden = false;
+            draw();
+            play();
+            showStatus(status, `${file.name}: ${plural(frames.length, "frame")}, ${width}×${height}, plays ${playsText(numPlays)}, decoded in ${elapsed.toFixed(1)} ms`);
+        } catch (error) {
+            if (run === generation) showStatus(status, `${file.name}: ${errorMessage(error)}`, true);
+        }
+    });
+
+    /** Re-encodes the frames the viewer shows with cropFrames and a palette, and checks they come back the same. */
+    async function optimize() {
+        if (!current) return;
+        const { file, bytes, animation } = current;
+        const run = generation;
+        optimizeButton.disabled = true;
+        showStatus(status, `${file.name}: re-encoding ${plural(animation.frames.length, "frame")} in a worker…`);
+        try {
+            const start = performance.now();
+            const png = await encodeAnimationRgba8Async(animation, { cropFrames: true, palette: "auto", compression: 9 });
+            const elapsed = performance.now() - start;
+            const check = await decodeAnimationRgba8Async(png);
+            if (run !== generation) return;
+
+            // What a viewer shows must not change: every frame, and its delay.
+            const identical = check.numPlays === animation.numPlays
+                && check.frames.length === animation.frames.length
+                && check.frames.every((frame, i) => frameDelayMs(frame) === frameDelayMs(animation.frames[i]) && sameBytes(frame.data, animation.frames[i].data));
+            const written = readChunks(png);
+            const cropped = written.frameControls.filter((c) => c.width < animation.width || c.height < animation.height).length;
+            const smaller = png.length < bytes.length;
+
+            const card = infoCard("Re-encoded", [
+                ["Size", `${formatBytes(png.length)}, ${((png.length / bytes.length) * 100).toFixed(0)}% of the original`],
+                ["Format", `${written.header.colorType}, ${written.header.bitDepth}-bit${written.palette ? `, ${written.palette.length} colors` : ""}`],
+                ["Cropped", `${cropped} of ${plural(written.frameControls.length, "frame")}`],
+                ["Time", `${elapsed.toFixed(1)} ms`],
+                ["Frames", pixelCheck(identical)],
+            ]);
+            if (optimizedCard) optimizedCard.replaceWith(card);
+            else cards.append(card);
+            optimizedCard = card;
+
+            download.hidden = !smaller;
+            if (smaller) setDownload(download, png, renamed(file.name, ".min.png"));
+            showStatus(
+                status,
+                smaller
+                    ? `${file.name}: ${formatBytes(bytes.length)} → ${formatBytes(png.length)} with cropFrames and palette: "auto"`
+                    : `${file.name}: the original, ${formatBytes(bytes.length)}, is already smaller than ${formatBytes(png.length)}; it stores its frames more cleverly than cropping whole frames can`,
+            );
+        } catch (error) {
+            if (run === generation) showStatus(status, `${file.name}: ${errorMessage(error)}`, true);
+        } finally {
+            optimizeButton.disabled = false;
+        }
+    }
+
+    playButton.addEventListener("click", () => (timer === undefined ? play() : pause()));
+    prevButton.addEventListener("click", () => goTo(index - 1));
+    nextButton.addEventListener("click", () => goTo(index + 1));
+    scrub.addEventListener("input", () => goTo(Number(scrub.value)));
+    showAreas.addEventListener("change", draw);
+    optimizeButton.addEventListener("click", () => void optimize());
+}
+
+// Make an animated PNG: one frame per image, encoded in a worker.
+{
+    const input = element<HTMLInputElement>("create-input");
+    const delay = element<HTMLInputElement>("create-delay");
+    const loop = element<HTMLInputElement>("create-loop");
+    const crop = element<HTMLInputElement>("create-crop");
+    const palette = element<HTMLInputElement>("create-palette");
+    const status = element<HTMLParagraphElement>("create-status");
+    const output = element<HTMLDivElement>("create-output");
+    const cards = element<HTMLDivElement>("create-cards");
+    const download = element<HTMLAnchorElement>("create-download");
+    const openButton = element<HTMLButtonElement>("create-open");
+
+    let frames: ImageData[] = [];
+    let made: File | undefined;
+    let generation = 0;
+
+    /** Decodes each image with the browser and fits it, centered, onto a canvas the size of the first. */
+    async function load(files: File[]): Promise<ImageData[]> {
+        const bitmaps = await Promise.all(files.map((file) => createImageBitmap(file, { premultiplyAlpha: "none", colorSpaceConversion: "none" })));
+        const { width, height } = bitmaps[0];
+        const scratch = new OffscreenCanvas(width, height);
+        const context = scratch.getContext("2d", { willReadFrequently: true })!;
+        return bitmaps.map((bitmap) => {
+            const scale = Math.min(width / bitmap.width, height / bitmap.height);
+            const [w, h] = [bitmap.width * scale, bitmap.height * scale];
+            context.clearRect(0, 0, width, height);
+            context.drawImage(bitmap, (width - w) / 2, (height - h) / 2, w, h);
+            bitmap.close();
+            return context.getImageData(0, 0, width, height);
+        });
+    }
+
+    async function create() {
+        if (frames.length === 0) return;
+        const run = ++generation;
+        const ms = Math.min(10000, Math.max(10, Number(delay.value) || 100));
+        const { width, height } = frames[0];
+        output.hidden = true;
+        showStatus(status, `Encoding ${plural(frames.length, "frame")} in a worker…`);
+        try {
+            const start = performance.now();
+            const png = await encodeAnimationRgba8Async(
+                {
+                    width,
+                    height,
+                    // The delay as delayNum / delayDen seconds: in milliseconds.
+                    frames: frames.map((frame) => ({ data: frame.data, delayNum: ms, delayDen: 1000 })),
+                    numPlays: loop.checked ? 0 : 1,
+                },
+                { cropFrames: crop.checked, palette: palette.checked ? "auto" : "keep" },
+            );
+            const elapsed = performance.now() - start;
+            if (run !== generation) return;
+
+            const written = readChunks(png);
+            const raw = frames.length * width * height * 4;
+            cards.replaceChildren(
+                infoCard("Animated PNG", [
+                    ["Size", `${formatBytes(png.length)}, ${(raw / png.length).toFixed(1)}× smaller than the raw frames`],
+                    ["Canvas", `${width} × ${height} px`],
+                    ["Frames", `${frames.length}, ${ms} ms each, playing ${playsText(written.animationControl?.numPlays ?? 0)}`],
+                    ["Format", `${written.header.colorType}, ${written.header.bitDepth}-bit${written.palette ? `, ${written.palette.length} colors` : ""}`],
+                    ["Time", `${elapsed.toFixed(1)} ms`],
+                ]),
+            );
+            made = new File([png as Uint8Array<ArrayBuffer>], "animation.png", { type: "image/png" });
+            setDownload(download, png, made.name);
+            output.hidden = false;
+            showStatus(status, `${plural(frames.length, "frame")} → ${formatBytes(png.length)} in ${elapsed.toFixed(1)} ms`);
+        } catch (error) {
+            if (run === generation) showStatus(status, errorMessage(error), true);
+        }
+    }
+
+    input.addEventListener("change", async () => {
+        // In file name order, numbers by value: frame-2 before frame-10.
+        const files = [...(input.files ?? [])].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        if (files.length === 0) return;
+        try {
+            showStatus(status, `Reading ${plural(files.length, "image")}…`);
+            frames = await load(files);
+            await create();
+        } catch (error) {
+            frames = [];
+            output.hidden = true;
+            showStatus(status, errorMessage(error), true);
+        }
+    });
+    for (const control of [delay, loop, crop, palette]) control.addEventListener("change", () => void create());
+    openButton.addEventListener("click", () => {
+        if (!made) return;
+        loadInto(element("animation-input"), made);
+        element("panel-animation").scrollIntoView({ behavior: "smooth" });
+    });
+}
+
 // Encode: encode an image to PNG with the chosen options, and check it decodes back to the same pixels.
 {
     const status = element<HTMLParagraphElement>("encode-status");
@@ -765,16 +1248,16 @@ function loadInto(input: HTMLInputElement, file: File) {
 
 
     /** The image to encode, and how it was read. */
-    let current: { file: File; image: RgbaImageInput; source: string } | undefined;
+    let current: { file: File; image: RgbaImageInput; source: string; animated: boolean } | undefined;
 
     /**
      * Reads `file` as RGBA. PNGs go through format-png, keeping their metadata
      * and raw chunks; anything else is decoded by the browser via a canvas.
      */
-    async function load(file: File, bytes: Uint8Array): Promise<{ image: RgbaImageInput; source: string }> {
-        if (file.type === "image/png") {
+    async function load(file: File, bytes: Uint8Array): Promise<{ image: RgbaImageInput; source: string; animated: boolean }> {
+        if (file.type === "image/png" || file.type === "image/apng") {
             const image = decodeRgba8(bytes, { preserveMetadata: true, preserveChunks: true });
-            return { image, source: "decoded with format-png" };
+            return { image, source: "decoded with format-png", animated: readChunks(bytes).animationControl !== undefined };
         }
         const bitmap = await createImageBitmap(file, { premultiplyAlpha: "none", colorSpaceConversion: "none" });
         const scratch = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -782,7 +1265,7 @@ function loadInto(input: HTMLInputElement, file: File) {
         context.drawImage(bitmap, 0, 0);
         bitmap.close();
         const { width, height, data } = context.getImageData(0, 0, scratch.width, scratch.height);
-        return { image: { width, height, data }, source: "decoded by the browser" };
+        return { image: { width, height, data }, source: "decoded by the browser", animated: false };
     }
 
     function options(): EncodeOptions {
@@ -857,7 +1340,8 @@ function loadInto(input: HTMLInputElement, file: File) {
             setDownload(download, png, renamed(file.name, ".encoded.png"));
 
             output.hidden = false;
-            showStatus(status, `${file.name}: ${formatBytes(file.size)} → ${formatBytes(png.length)} in ${elapsed.toFixed(1)} ms`);
+            const animated = current.animated ? " (an animated PNG: only its default image is encoded here; the Animation tab re-encodes every frame)" : "";
+            showStatus(status, `${file.name}: ${formatBytes(file.size)} → ${formatBytes(png.length)} in ${elapsed.toFixed(1)} ms${animated}`);
         } catch (error) {
             showStatus(status, `${file.name}: ${errorMessage(error)}`, true);
         }
@@ -980,13 +1464,12 @@ function loadInto(input: HTMLInputElement, file: File) {
     }
 
     /**
-     * Encodes `image` once per entry of `jobs`, at most `count` at a time, each
+     * Runs `encode` once per entry of `jobs`, at most `count` at a time, each
      * starting as soon as one finishes, so each one's time is its own. Results
      * are in the order of `jobs`.
      */
     async function encodeInWorkers(
-        pool: WorkerPool,
-        image: PngImage,
+        encode: (options: EncodeOptions & { signal: AbortSignal }) => Promise<Uint8Array>,
         jobs: EncodeOptions[],
         count: number,
         signal: AbortSignal,
@@ -999,8 +1482,8 @@ function loadInto(input: HTMLInputElement, file: File) {
             while (next < jobs.length) {
                 const id = next++;
                 const start = performance.now();
-                // The pixels are copied for each job, so `image` stays usable.
-                const png = await pool.encode(image, { ...jobs[id], signal });
+                // The pixels are copied for each job, so the image stays usable.
+                const png = await encode({ ...jobs[id], signal });
                 results[id] = { png, elapsed: performance.now() - start };
                 onProgress(++done);
             }
@@ -1010,18 +1493,18 @@ function loadInto(input: HTMLInputElement, file: File) {
     }
 
     /**
-     * Every encoding to try for `image`. Fast is one; thorough is every filter
-     * at the best compression.
+     * Every encoding to try for an image with `header` and `size` bytes of
+     * samples. Fast is one; thorough is every filter at the best compression.
      *
      * A palette only applies to 8-bit RGB and RGBA, so other images skip it.
      * Thorough also tries without one for images over `PALETTE_COMPARE_LIMIT`;
      * smaller ones get that comparison from the encoder already.
      */
-    function plans(image: PngImage): { palette: Candidate["palette"]; filter: Candidate["filter"]; compression: number }[] {
+    function plans(header: PngHeader, size: number): { palette: Candidate["palette"]; filter: Candidate["filter"]; compression: number }[] {
         const thorough = effort.value === "thorough";
-        const { colorType, bitDepth } = image.header;
+        const { colorType, bitDepth } = header;
         const canPalettize = tryPalette.checked && bitDepth === 8 && (colorType === "rgb" || colorType === "rgba");
-        const compareWithout = thorough && image.data.length > PALETTE_COMPARE_LIMIT;
+        const compareWithout = thorough && size > PALETTE_COMPARE_LIMIT;
         const palettes: Candidate["palette"][] = !canPalettize ? ["keep"] : compareWithout ? ["auto", "keep"] : ["auto"];
         const filters = thorough ? FILTERS : (["adaptive"] as const);
         return palettes.flatMap((palette) => filters.map((filter) => ({ palette, filter, compression: thorough ? 9 : 6 })));
@@ -1052,6 +1535,18 @@ function loadInto(input: HTMLInputElement, file: File) {
         return sameBytes(after.data, before.data);
     }
 
+    /**
+     * Whether the animation `png` shows exactly what `originalBytes` does: the
+     * same number of plays, and every frame as a viewer draws it, with the same
+     * delay. Its frames may be stored differently, cropped or as a palette.
+     */
+    async function sameAnimation(pool: WorkerPool, originalBytes: Uint8Array, png: Uint8Array, signal: AbortSignal): Promise<boolean> {
+        const [after, before] = await Promise.all([pool.decodeAnimationRgba8(png, { signal }), pool.decodeAnimationRgba8(originalBytes, { signal })]);
+        return after.numPlays === before.numPlays
+            && after.frames.length === before.frames.length
+            && after.frames.every((frame, i) => frameDelayMs(frame) === frameDelayMs(before.frames[i]) && sameBytes(frame.data, before.frames[i].data));
+    }
+
     /** Each chunk type in `before` that `after` doesn't have, with how many there were and their size. */
     function removedChunks(before: PngRawChunk[], after: PngRawChunk[]): { type: string; count: number; bytes: number }[] {
         const kept = new Set(after.map((c) => c.type));
@@ -1067,7 +1562,8 @@ function loadInto(input: HTMLInputElement, file: File) {
     }
 
     const format = (png: PngChunks) =>
-        `${png.header.colorType}, ${png.header.bitDepth}-bit${png.palette ? `, ${png.palette.length} colors` : ""}${png.header.interlaced ? ", interlaced" : ""}`;
+        `${png.header.colorType}, ${png.header.bitDepth}-bit${png.palette ? `, ${png.palette.length} colors` : ""}${png.header.interlaced ? ", interlaced" : ""}`
+        + (png.animationControl ? `, ${plural(png.animationControl.numFrames, "frame")}` : "");
 
     function render(
         file: File,
@@ -1155,22 +1651,36 @@ function loadInto(input: HTMLInputElement, file: File) {
             // Decoding a large image takes a while too, so it's in a worker like the rest.
             showStatus(status, `${file.name}: decoding…`);
             let pool = poolOfSize(MAX_WORKERS);
-            const [original, decoded] = await Promise.all([
-                pool.readChunks(bytes, { signal }),
-                // In the file's own format, so 16-bit samples and palettes come through exactly.
-                pool.decode(bytes, { preserveMetadata: true, preserveChunks: true, signal }),
-            ]);
+            const original = await pool.readChunks(bytes, { signal });
+            // In the file's own format, so 16-bit samples and palettes come through exactly. An animated PNG is
+            // decoded and encoded as an animation, so it stays one, with every frame as stored.
+            const decodeOptions = { preserveMetadata: true, preserveChunks: true, signal };
+            const decoded: RawImage | RawAnimation = original.animationControl
+                ? await pool.decodeAnimation(bytes, decodeOptions)
+                : await pool.decode(bytes, decodeOptions);
             // Adam7 almost always makes the file bigger. The samples are the whole image either way, so this is lossless.
-            const image: PngImage = { ...decoded, header: { ...decoded.header, interlaced: false } };
+            const header = { ...decoded.header, interlaced: false };
             const strip = stripLevel();
-            const todo = plans(image);
-            const memoryCap = workersForImage(image.data.length);
+            let size: number;
+            let encodeOne: (options: EncodeOptions & { signal: AbortSignal }) => Promise<Uint8Array>;
+            if ("frames" in decoded) {
+                const animation: RawAnimation = { ...decoded, header };
+                size = decoded.frames.reduce((sum, frame) => sum + frame.data.length, decoded.defaultImage?.length ?? 0);
+                // Cropping only applies where it can't change what's shown, so it's always worth trying.
+                encodeOne = (options) => pool.encodeAnimation(animation, { ...options, cropFrames: true });
+            } else {
+                const image: PngImage = { ...decoded, header };
+                size = image.data.length;
+                encodeOne = (options) => pool.encode(image, options);
+            }
+            const todo = plans(header, size);
+            const memoryCap = workersForImage(size);
             const limited = parallel.checked && memoryCap < Math.min(MAX_WORKERS, todo.length);
             const workers = Math.min(parallel.checked ? MAX_WORKERS : 1, memoryCap, todo.length);
             workersLabel.textContent = limited ? `${memoryCap} of ${MAX_WORKERS}` : `${MAX_WORKERS}`;
             pool = poolOfSize(Math.min(MAX_WORKERS, memoryCap));
             const on = limited
-                ? `${plural(workers, "worker")}, limited by the image's size (about ${formatBytes(workerMemory(image.data.length))} each)`
+                ? `${plural(workers, "worker")}, limited by the image's size (about ${formatBytes(workerMemory(size))} each)`
                 : plural(workers, "worker");
 
             showStatus(status, `${file.name}: encoding 0 of ${todo.length} on ${on}…`);
@@ -1178,7 +1688,7 @@ function loadInto(input: HTMLInputElement, file: File) {
             // The pixels are unchanged, so chunks that depend on them, such as bKGD and sBIT, stay valid. The
             // encoder still drops them when it converts to a palette, and stripping drops them anyway.
             const jobs = todo.map(({ compression, filter, palette }): EncodeOptions => ({ compression, filter, palette, strip, keepUnsafeChunks: true }));
-            const results = await encodeInWorkers(pool, image, jobs, workers, signal, (done) => {
+            const results = await encodeInWorkers(encodeOne, jobs, workers, signal, (done) => {
                 showStatus(status, `${file.name}: encoding ${done} of ${todo.length} on ${on}…`);
             });
             const wall = performance.now() - start;
@@ -1187,7 +1697,8 @@ function loadInto(input: HTMLInputElement, file: File) {
             const best = candidates.reduce((a, b) => (b.png.length < a.png.length ? b : a));
             showStatus(status, `${file.name}: checking the pixels…`);
             const [pixelsMatch, preview] = await Promise.all([
-                samePixels(pool, decoded, bytes, best.png, signal),
+                "frames" in decoded ? sameAnimation(pool, bytes, best.png, signal) : samePixels(pool, decoded, bytes, best.png, signal),
+                // For an animation, its default image.
                 pool.decodeRgba8(best.png, { signal }),
             ]);
             render(file, bytes, original, candidates, best, { wall, workers, limited }, pixelsMatch, preview);

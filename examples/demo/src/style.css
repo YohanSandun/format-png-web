@@ -22,6 +22,7 @@
     --cat-metadata: #10b981;
     --cat-text: #f59e0b;
     --cat-unknown: #ef4444;
+    --cat-animation: #06b6d4;
 }
 
 * {
@@ -302,6 +303,10 @@ input[type="text"] {
     cursor: pointer;
 }
 
+.button[hidden] {
+    display: none; /* display: inline-flex above would otherwise show it */
+}
+
 .button:hover {
     border-color: var(--accent);
 }
@@ -436,6 +441,55 @@ table.fields th {
     color: var(--accent);
 }
 
+/* Animation */
+
+#panel-animation .intro:not(:first-child) {
+    margin-top: 40px;
+}
+
+.player-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    margin: 12px 0;
+}
+
+.player-controls input[type="range"] {
+    flex: 1;
+    min-width: 120px;
+    max-width: none;
+}
+
+.player-controls output {
+    min-width: 12ch;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+}
+
+input[type="number"] {
+    width: 7ch;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: inherit;
+    font: inherit;
+}
+
+#animation-frames tbody tr {
+    cursor: pointer;
+}
+
+#animation-frames tr.current {
+    background: var(--accent-soft);
+}
+
+.button:disabled {
+    opacity: 0.6;
+    cursor: progress;
+}
+
 /* Minimize */
 
 .strip-levels {
@@ -470,6 +524,7 @@ table.fields th {
 .cat-metadata { --cat: var(--cat-metadata); }
 .cat-text { --cat: var(--cat-text); }
 .cat-unknown { --cat: var(--cat-unknown); }
+.cat-animation { --cat: var(--cat-animation); }
 
 code,
 .mono,

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Inspect, decode, encode and minimize PNG files in the browser with format-png, a PNG codec compiled to WebAssembly." />
+    <meta name="description" content="Inspect, decode, encode, animate and minimize PNG and APNG files in the browser with format-png, a PNG codec compiled to WebAssembly." />
     <title>format-png demo</title>
   </head>
   <body>
@@ -25,6 +25,7 @@
       <div class="tabs" role="tablist" aria-label="Features">
         <button role="tab" id="tab-chunks" aria-controls="panel-chunks" data-tab="chunks">Chunks</button>
         <button role="tab" id="tab-decode" aria-controls="panel-decode" data-tab="decode">Decode</button>
+        <button role="tab" id="tab-animation" aria-controls="panel-animation" data-tab="animation">Animation</button>
         <button role="tab" id="tab-encode" aria-controls="panel-encode" data-tab="encode">Encode</button>
         <button role="tab" id="tab-minimize" aria-controls="panel-minimize" data-tab="minimize">Minimize</button>
       </div>
@@ -88,6 +89,83 @@
           </div>
           <div class="stage">
             <canvas id="preview-canvas" hidden></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panel-animation" aria-labelledby="tab-animation" hidden>
+        <div class="intro">
+          <h2>Animated PNG</h2>
+          <p>
+            <code>decodeAnimationRgba8</code> decodes every frame of an APNG and draws it onto the canvas with its
+            disposal and blending, as a viewer shows it. Decoding and encoding run in format-png's worker pool.
+            Re-encoding with <code>cropFrames</code> crops each frame to what changed since the one before.
+          </p>
+        </div>
+        <label class="dropzone">
+          <input id="animation-input" type="file" accept="image/png,image/apng" />
+          <span class="dropzone-title">Drop an animated PNG here, or click to choose one</span>
+          <span class="dropzone-hint">or <button type="button" class="link" data-sample="animation-input">try a sample animation</button></span>
+        </label>
+        <p id="animation-status" class="status" role="status"></p>
+        <div id="animation-output" hidden>
+          <div class="stage player-stage">
+            <canvas id="animation-canvas"></canvas>
+          </div>
+          <div class="player-controls">
+            <button id="animation-play" class="button" type="button">Pause</button>
+            <button id="animation-prev" class="button" type="button" aria-label="Previous frame" title="Previous frame">◀</button>
+            <button id="animation-next" class="button" type="button" aria-label="Next frame" title="Next frame">▶</button>
+            <input id="animation-scrub" type="range" min="0" max="0" value="0" aria-label="Frame" />
+            <output id="animation-frame"></output>
+            <label class="check" title="Outline the area each frame's fcTL chunk covers">
+              <input id="animation-areas" type="checkbox" /> Show frame areas
+            </label>
+          </div>
+          <div id="animation-cards" class="cards"></div>
+          <div class="actions">
+            <button id="animation-optimize" class="button" type="button" title="encodeAnimationRgba8 with cropFrames, palette: auto and level 9">Re-encode smaller</button>
+            <a id="animation-download" class="button primary" href="#" download hidden>Download re-encoded APNG</a>
+          </div>
+          <h3>Frames</h3>
+          <div class="table-scroll">
+            <table id="animation-frames" class="compare">
+              <thead>
+                <tr><th class="num">#</th><th>Area</th><th class="num">Delay</th><th>Dispose</th><th>Blend</th><th class="num">Data</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="intro">
+          <h2>Make an animated PNG</h2>
+          <p>
+            <code>encodeAnimationRgba8</code> turns a series of images into an APNG, one frame each, in file name
+            order. Frames are fitted to the first image's size.
+          </p>
+        </div>
+        <label class="dropzone">
+          <input id="create-input" type="file" accept="image/*" multiple />
+          <span class="dropzone-title">Drop several images here, or click to choose them</span>
+          <span class="dropzone-hint">PNG, JPEG, WebP, GIF… or <button type="button" class="link" data-sample="create-input">try sample frames</button></span>
+        </label>
+        <div class="controls">
+          <label>Frame delay <input id="create-delay" type="number" min="10" max="10000" step="10" value="100" /> ms</label>
+          <label class="check"><input id="create-loop" type="checkbox" checked /> Loop forever</label>
+          <label class="check" title="Crop each frame to the area that changed since the frame before">
+            <input id="create-crop" type="checkbox" checked /> Crop frames
+          </label>
+          <label class="check" title="Write the animation as indexed color if all its frames have at most 256 colors">
+            <input id="create-palette" type="checkbox" checked /> Palette when it fits
+          </label>
+        </div>
+        <p id="create-status" class="status" role="status"></p>
+        <div id="create-output" hidden>
+          <div id="create-cards" class="cards"></div>
+          <div class="actions">
+            <a id="create-download" class="button primary" href="#" download>Download APNG</a>
+            <button id="create-open" class="button" type="button">Open in the player</button>
           </div>
         </div>
       </section>
@@ -182,8 +260,8 @@
           <p>
             Makes a PNG as small as possible without changing a single pixel, 16-bit included: it strips the chunks
             you choose, converts images with at most 256 colors to a palette, and tries several encodings in parallel
-            to keep the smallest. Everything runs in format-png's worker pool, decoding included, so the page stays
-            responsive even for very large images.
+            to keep the smallest. Animated PNGs stay animated, with their frames cropped to what changed. Everything
+            runs in format-png's worker pool, decoding included, so the page stays responsive even for very large images.
           </p>
         </div>
         <label class="dropzone">

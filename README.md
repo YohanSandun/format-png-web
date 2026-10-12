@@ -50,7 +50,7 @@ const png = encodeRgba8(canvas.getContext("2d").getImageData(0, 0, canvas.width,
 - **No dependencies**, about 215 kB packed, with TypeScript types.
 
 Try it in the [demo](examples/demo), which has a tab for each feature: inspect,
-decode, encode and minimize.
+decode, play and make animated PNGs, encode and minimize.
 
 ## Repository layout
 
@@ -58,7 +58,7 @@ decode, encode and minimize.
 |---|---|
 | [`packages/format-png`](packages/format-png) | The npm package: TypeScript API, types and the `.wasm` module. |
 | [`crates/format-png-wasm`](crates/format-png-wasm) | The Rust bindings the package wraps, built with `wasm-bindgen`. |
-| [`examples/demo`](examples/demo) | A Vite app with a tab per feature: inspect chunks, decode, encode and minimize. |
+| [`examples/demo`](examples/demo) | A Vite app with a tab per feature: inspect chunks, decode, play and make APNGs, encode and minimize. |
 
 The PNG codec itself is the [`format-png`](https://crates.io/crates/format-png)
 crate, in [its own repository](https://github.com/YohanSandun/format-png-rust).
