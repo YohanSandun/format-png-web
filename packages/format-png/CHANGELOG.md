@@ -2,8 +2,42 @@
 
 ## 0.4.0
 
-Worker pools now encode one large image on all their workers, built on the
-format-png crate's new segment API.
+Animated PNG (APNG) support, and worker pools that encode one large image on
+all their workers. Built on the format-png crate 0.3.0.
+
+### Animated PNG
+
+- `decodeAnimationRgba8` decodes every frame of an APNG as a viewer shows
+  it: drawn onto the canvas with its disposal and blending, as a whole canvas
+  of 8-bit RGBA. It returns an `RgbaAnimation` of `RgbaFrame`s, each with its
+  delay, and the number of plays.
+- `decodeAnimation` decodes every frame as the file stores it, in its own
+  pixel format, with its `fcTL` fields: size, position, delay, `dispose` and
+  `blend`. It returns a `RawAnimation`, with the palette, transparency,
+  metadata and chunks the frames share, and the default image if it isn't the
+  first frame.
+- `encodeAnimation` and `encodeAnimationRgba8` write an APNG from frames
+  with positions, delays, disposal and blending, the number of plays, and an
+  optional separate default image. A decoded `RawAnimation` or
+  `RgbaAnimation` works as it is, and `encodeAnimation(decodeAnimation(bytes))`
+  writes the same frames back.
+- `cropFrames` encode option: crops each frame to the area that changed since
+  the frame before, which makes animations of whole-canvas frames, such as
+  those from `decodeAnimationRgba8`, much smaller. What viewers show doesn't
+  change. `palette: "auto"` also applies to animations: they're written as
+  indexed color when all their frames have at most 256 colors between them.
+- `readChunks` returns an APNG's `animationControl` (`numFrames`,
+  `numPlays`) and every frame's `frameControls`, without decoding anything.
+- `frameDelayMs(frame)` gives a frame's delay in milliseconds.
+- `PngDecoder` has `decodeAnimation` and `decodeAnimationRgba8`, and
+  `PngEncoder` has `encodeAnimation` and `encodeAnimationRgba8`.
+- Async versions run in the worker pool: `decodeAnimationAsync`,
+  `decodeAnimationRgba8Async`, `encodeAnimationAsync` and
+  `encodeAnimationRgba8Async`, and the pool methods of the same names. With
+  `transfer: true`, every frame's buffer moves, even when frames share one.
+- Types: `RawAnimation`, `RawFrame`, `RgbaAnimation`, `RgbaFrame`,
+  `PngAnimation`, `PngFrame`, `RgbaAnimationInput`, `RgbaFrameInput`,
+  `FrameControl`, `DisposeOp` and `BlendOp`.
 
 ### Faster
 
@@ -24,6 +58,12 @@ format-png crate's new segment API.
 - Cancelling a running job no longer stops its worker if that worker holds
   an image another job is splitting: the task finishes, and its result is
   dropped. The job still rejects at once.
+- `readChunks` marks `acTL`, `fcTL` and `fdAT` chunks `known: true`.
+- Raw `acTL`, `fcTL` and `fdAT` chunks given to `encode` are never written,
+  even with `keepUnsafeChunks`. Re-encoding a decoded APNG with its chunks
+  kept used to write the old animation chunks around the new image data,
+  making a broken animation; it now writes a still image. Use
+  `decodeAnimation` and `encodeAnimation` to keep the animation.
 
 ### Added
 
@@ -33,7 +73,9 @@ format-png crate's new segment API.
 
 ### Other
 
-- Built against the format-png crate 0.2.0 (from 0.1.1).
+- Built against the format-png crate 0.3.0 (from 0.1.1).
+- The WebAssembly module is 317 kB, up from 261 kB, and the package is about
+  215 kB packed.
 - `npm run bench:pool` times a pool splitting one image, at several sizes.
 
 ## 0.3.0

@@ -8,11 +8,12 @@ A PNG decoder and encoder for the browser and Node, compiled from Rust to WebAss
 
 - **Decodes every PNG:** every color type, bit depth from 1 to 16, and Adam7 interlacing. Decode to 8-bit RGBA for a canvas, or in the file's own format with nothing lost.
 - **Encodes losslessly**, with control over compression level, DEFLATE strategy and row filters.
+- **Animated PNG (APNG):** decodes every frame, as stored or drawn onto the canvas as a viewer shows it, and encodes animations, cropping frames to what changed.
 - **Reads every chunk** without decompressing the image: header, palette, transparency, `gAMA`, `cHRM`, `sRGB`, `iCCP`, `cICP`, `pHYs`, `tIME`, `eXIf`, `tEXt`, `zTXt`, `iTXt`, plus private and unknown chunks raw.
 - **Writes metadata** back: color space, ICC profiles, Exif, text and your own chunks.
 - **Makes files smaller:** converts images with up to 256 colors to a palette, and strips the chunks you don't need, without changing a pixel.
 - **Runs off the main thread** with a built-in worker pool, so large images don't freeze the page.
-- **No dependencies.** About 170 kB packed, mostly the WebAssembly module. Ships with TypeScript types.
+- **No dependencies.** About 215 kB packed, mostly the WebAssembly module. Ships with TypeScript types.
 
 ## Install
 
@@ -108,6 +109,64 @@ const smaller = encode(
 - Interlacing almost always makes files bigger, and turning it off doesn't change the pixels.
 - To squeeze out the last bytes, try each `filter` and keep the smallest result.
 
+## Animated PNG
+
+An APNG holds a series of frames, each with a delay, on a canvas the size of the image. Viewers that don't support APNG show the default image, which is usually the first frame. `decodeRgba8` and `decode` read just that image. `decodeAnimationRgba8` reads every frame:
+
+```js
+import { decodeAnimationRgba8, frameDelayMs, toImageData } from "format-png";
+
+const animation = decodeAnimationRgba8(bytes); // { width, height, numPlays, frames }
+// Each frame is the whole canvas, as a viewer shows it: { data, delayNum, delayDen }.
+let i = 0;
+(function show() {
+    const frame = animation.frames[i];
+    context.putImageData(new ImageData(frame.data, animation.width, animation.height), 0, 0);
+    i = (i + 1) % animation.frames.length;
+    setTimeout(show, frameDelayMs(frame));
+})();
+```
+
+`numPlays` says how many times to play the animation; 0 means forever. Each frame holds a whole canvas, so a long animation of a large image takes a lot of memory: 100 frames of 1000×1000 is 400 MB.
+
+To make an animation, pass whole-canvas RGBA frames to `encodeAnimationRgba8`, for example from a canvas each step. With `cropFrames: true`, each frame is cropped to the area that changed since the one before, which makes the file much smaller:
+
+```js
+import { encodeAnimationRgba8 } from "format-png";
+
+const png = encodeAnimationRgba8(
+    {
+        width,
+        height,
+        frames: steps.map((imageData) => ({ data: imageData.data, delayNum: 1, delayDen: 30 })), // 30 fps
+        numPlays: 0,
+    },
+    { cropFrames: true, palette: "auto" },
+);
+```
+
+A decoded `RgbaAnimation` works as it is, so `encodeAnimationRgba8(decodeAnimationRgba8(bytes), { cropFrames: true })` re-encodes an animation, often smaller. `palette: "auto"` writes it as indexed color if all the frames together have at most 256 colors.
+
+### Frames as stored
+
+`decodeAnimation` reads each frame as the file stores it, without drawing it onto the canvas: only its own area, in the file's own pixel format, as `decode` gives a still image. Each frame has its `fcTL` fields: `width`, `height`, its position `x` and `y`, the delay `delayNum / delayDen` seconds, `dispose` (`"none"`, `"background"` or `"previous"`: what happens to its area before the next frame) and `blend` (`"source"` replaces its area, `"over"` draws over it with alpha). Pass the result to `encodeAnimation` to write the same frames back.
+
+`encodeAnimation` takes frames in any pixel format, sharing the `header`'s bit depth and color type and the animation's palette and transparency. Each frame's fields default to the whole canvas at 0.1 s, `dispose: "none"` and `blend: "source"`. The first frame must cover the canvas, unless `defaultImage` gives a separate image for viewers without APNG support.
+
+```js
+import { encodeAnimation } from "format-png";
+
+const png = encodeAnimation({
+    header: { width: 64, height: 64, bitDepth: 8, colorType: "rgba", interlaced: false },
+    frames: [
+        { data: background },                                                   // the whole canvas
+        { data: sprite, width: 16, height: 16, x: 24, y: 24, blend: "over" },   // drawn over it
+    ],
+});
+```
+
+`readChunks` gives an APNG's `animationControl` (`{ numFrames, numPlays }`) and every frame's `frameControls` without decoding anything. The decoders throw a `PngError` for a PNG that isn't animated, and `animationControl` is then absent.
+
 ## Metadata
 
 Decode with `preserveMetadata: true` to get `metadata`, or use `readChunks`, which always parses it. To write metadata, pass it with the image:
@@ -159,7 +218,7 @@ decodeRgba8Async(bytes).then((image) => {
 const png = await encodeRgba8Async(imageData, { palette: "auto" });
 ```
 
-`decodeAsync`, `decodeRgba8Async`, `encodeAsync`, `encodeRgba8Async`, `readChunksAsync`, `readHeaderAsync` and `parseTextAsync` take the same arguments and options as the functions they're named after, resolve to the same results, and reject with the same `PngError`.
+`decodeAsync`, `decodeRgba8Async`, `encodeAsync`, `encodeRgba8Async`, `readChunksAsync`, `readHeaderAsync`, `parseTextAsync`, and for animations `decodeAnimationAsync`, `decodeAnimationRgba8Async`, `encodeAnimationAsync` and `encodeAnimationRgba8Async`, take the same arguments and options as the functions they're named after, resolve to the same results, and reject with the same `PngError`.
 
 You don't need to call `init()` or set anything up. The functions share one worker pool, created on first use with the default size. Its workers start only as jobs need them, so one call starts one worker. To free the workers and their memory, call `terminateDefaultWorkerPool()`; the next call starts a new pool. `defaultWorkerPool()` returns that pool.
 
@@ -179,7 +238,7 @@ const pngs = await Promise.all(frames.map((frame) => pool.encodeRgba8(frame)));
 await pool.terminate();
 ```
 
-- **The same API, async.** A pool's `decode`, `decodeRgba8`, `encode`, `encodeRgba8`, `readChunks`, `readHeader` and `parseText` methods work like the async functions.
+- **The same API, async.** A pool's `decode`, `decodeRgba8`, `encode`, `encodeRgba8`, `readChunks`, `readHeader` and `parseText` methods, and `decodeAnimation`, `decodeAnimationRgba8`, `encodeAnimation` and `encodeAnimationRgba8`, work like the async functions.
 - **No `init()` needed.** Each worker loads the embedded WebAssembly module itself.
 - **Size.** By default, one worker per CPU core (`navigator.hardwareConcurrency`, or `os.availableParallelism()` in Node), at most 8.
 - **Lazy workers.** Creating a pool starts nothing. Workers start as jobs need them, up to `size`, and then stay alive between jobs, each keeping its own decoders and encoders, so a batch keeps their buffer reuse.
@@ -203,6 +262,8 @@ Filtering and joining run on one worker, so the speedup levels off. Run `npm run
 
 The segments are compressed independently, so the file is a little larger than one compressed as a single stream, about 0.1% for that photo. A split image's bytes are the same as `encode(image, { threads: "auto" })` gives on any thread, with any number of workers. For the smallest file, pass `threads: "single"`: the pool then encodes on one worker, with the same bytes as the sync `encode`.
 
+Animations aren't split: each is encoded on one worker, with `threads: "single"` by default, so the bytes are the same as the sync `encodeAnimation`. To encode several animations in parallel, start them together.
+
 ### When to use which
 
 Use the async functions or a pool for large images, for batches that can run in parallel, and whenever the page has to stay responsive. Use the sync functions for small images such as icons: posting the bytes to a worker and back costs more than decoding them, and the sync call returns in well under a frame.
@@ -211,7 +272,7 @@ WebAssembly memory never shrinks, so each worker keeps as much as the largest im
 
 ### Copying and transferring buffers
 
-By default the input bytes (or `image.data` for `encode` and `encodeRgba8`) are **copied** to the worker, so you can keep using them. Results always come back without a copy.
+By default the input bytes (or `image.data` for `encode` and `encodeRgba8`, and each frame's `data` and the `defaultImage` for the animation encoders) are **copied** to the worker, so you can keep using them. Results always come back without a copy.
 
 With `transfer: true`, the input's `ArrayBuffer` is **moved** to the worker instead, which saves the copy:
 
@@ -265,10 +326,15 @@ const pool = createWorkerPool({
 | `parseText(type, data)` | Decodes a `tEXt`, `zTXt` or `iTXt` chunk. |
 | `encodeRgba8(image, options?)` | Encodes 8-bit RGBA, such as an `ImageData`. |
 | `encode(image, options?)` | Encodes any color type and bit depth, with palette, transparency, metadata and chunks. |
+| `decodeAnimationRgba8(bytes, options?)` | Decodes an APNG's frames as a viewer shows them: whole canvases of 8-bit RGBA. |
+| `decodeAnimation(bytes, options?)` | Decodes an APNG's frames as stored, in the file's own format, losslessly. |
+| `encodeAnimationRgba8(animation, options?)` | Encodes an APNG from 8-bit RGBA frames. |
+| `encodeAnimation(animation, options?)` | Encodes an APNG in any color type and bit depth, with each frame's position, delay, disposal and blending. |
+| `frameDelayMs(frame)` | A frame's delay in milliseconds. |
 | `toImageData(image)` | Wraps decoded RGBA for `putImageData`. Browser only. |
 | `pixelsPerInch(dimensions)` | Converts `pHYs` to pixels per inch. |
 | `PngDecoder`, `PngEncoder` | Reusable decoder and encoder. |
-| `decodeAsync`, `decodeRgba8Async`, `encodeAsync`, `encodeRgba8Async`, `readChunksAsync`, `readHeaderAsync`, `parseTextAsync` | The functions above, in a Web Worker or worker_thread, returning promises. |
+| `decodeAsync`, `decodeRgba8Async`, `encodeAsync`, `encodeRgba8Async`, `readChunksAsync`, `readHeaderAsync`, `parseTextAsync`, `decodeAnimationAsync`, `decodeAnimationRgba8Async`, `encodeAnimationAsync`, `encodeAnimationRgba8Async` | The functions above, in a Web Worker or worker_thread, returning promises. |
 | `createWorkerPool(options?)` | A pool of workers with the same async methods, for control over the workers. |
 | `defaultWorkerPool()`, `terminateDefaultWorkerPool()` | The pool behind the async functions, and a way to free it. |
 
@@ -288,7 +354,8 @@ const pool = createWorkerPool({
 | `palette` | `"keep"`, `"auto"` | `"keep"` |
 | `strip` | `"keep"`, `"safe"`, `"all"` | `"keep"` |
 | `keepUnsafeChunks` | Also write raw chunks whose data depends on the pixels, such as `bKGD` and `sBIT`. Only when the pixels are unchanged. | `false` |
-| `threads` | `"single"`: compress the image data as one stream. `"auto"`: in independent 1 MiB segments, which a worker pool compresses in parallel; the file is a little larger. | `"single"`; `"auto"` in worker pools and the async functions |
+| `threads` | `"single"`: compress the image data as one stream. `"auto"`: in independent 1 MiB segments, which a worker pool compresses in parallel; the file is a little larger. | `"single"`; `"auto"` in worker pools and the async functions, for still images |
+| `cropFrames` | Animations only: crop each frame to the area that changed since the frame before. What viewers show doesn't change. | `false` |
 
 On photos, levels 7 to 9 are much slower than the default for very little gain (level 9 takes about twice as long for a file about 1% smaller), and levels 4 and 5 are several times faster for files 4 to 7% larger, which suits large photos. Smooth images and graphics gain more from higher levels, but take longer still: level 9 can be over 10 times slower.
 

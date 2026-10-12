@@ -28,7 +28,7 @@ try {
         join(project, "smoke.mjs"),
         `
 import assert from "node:assert/strict";
-import { init, decode, decodeRgba8, encode, encodeRgba8, readChunks, readHeader, PngError } from "format-png";
+import { init, decode, decodeAnimationRgba8, decodeRgba8, encode, encodeAnimationRgba8, encodeRgba8, readChunks, readHeader, PngError } from "format-png";
 
 // The embedded module, as the docs say to load it.
 await init();
@@ -43,6 +43,11 @@ assert.equal(readChunks(png).metadata.text[0].text, "smoke");
 const header = { width: 2, height: 1, bitDepth: 16, colorType: "grayscale", interlaced: false };
 const samples = new Uint8Array([0x12, 0x34, 0xfe, 0xdc]);
 assert.deepEqual([...decode(encode({ header, data: samples })).data], [...samples]);
+
+// An animated PNG: the frames a viewer shows come back.
+const frames = [[255, 0, 0, 255], [0, 0, 255, 255]].map((color) => ({ data: Uint8Array.from({ length: 16 }, (_, i) => color[i % 4]) }));
+const apng = encodeAnimationRgba8({ width: 2, height: 2, frames }, { cropFrames: true });
+assert.deepEqual(decodeAnimationRgba8(apng).frames.map((frame) => [...frame.data]), frames.map((frame) => [...frame.data]));
 
 assert.throws(() => decodeRgba8(new Uint8Array([1, 2, 3])), PngError);
 console.log("format-png package OK");

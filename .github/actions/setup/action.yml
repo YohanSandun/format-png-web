@@ -16,12 +16,12 @@ runs:
     # checked out next to this repository, as on a development machine. The
     # bindings themselves use the crate from crates.io, at the version in
     # Cargo.lock. Keep the two the same: pinned to the commit of that version's
-    # tag, so the tests use its images. This is format-png v0.2.0.
+    # tag, so the tests use its images. This is format-png v0.3.0.
     - name: Check out the format-png crate
       uses: actions/checkout@v5
       with:
         repository: YohanSandun/format-png-rust
-        ref: c7c461b63ea89323d63659abb72112eeb963c7aa
+        ref: 6c6066e7bfd949b89845b514e3a56044a3531391
         path: format-png
 
     - name: Set up Rust

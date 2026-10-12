@@ -5,8 +5,9 @@
 
 import { listen, post } from "#port";
 import {
-    PngDecoder, PngEncoder, PngError, compressSegment, finish, init, parseText, prepare, readHeader, rgbaToPngImage,
-    type DecodeOptions, type EncodeOptions, type PngChunks, type PngImage, type PngText, type ReadChunksOptions, type RgbaImageInput,
+    PngDecoder, PngEncoder, PngError, compressSegment, finish, init, parseText, prepare, readHeader, rgbaToPngAnimation, rgbaToPngImage,
+    type DecodeOptions, type EncodeOptions, type PngAnimation, type PngChunks, type PngImage, type PngText, type ReadChunksOptions,
+    type RgbaAnimationInput, type RgbaImageInput,
 } from "./core.js";
 import { buffersIn, type Prepared, type Request, type Response } from "./protocol.js";
 
@@ -43,8 +44,8 @@ function decoder(options: DecodeOptions): PngDecoder {
 }
 
 function encoder(options: EncodeOptions): PngEncoder {
-    const { compression, compressionStrategy, filter, keepUnsafeChunks, palette, strip, threads } = options;
-    const normalized = { compression, compressionStrategy, filter, keepUnsafeChunks, palette, strip, threads };
+    const { compression, compressionStrategy, filter, keepUnsafeChunks, palette, strip, threads, cropFrames } = options;
+    const normalized = { compression, compressionStrategy, filter, keepUnsafeChunks, palette, strip, threads, cropFrames };
     return encoders.get(JSON.stringify(normalized), () => new PngEncoder(normalized));
 }
 
@@ -101,6 +102,14 @@ function run(request: Request): unknown {
             if (request.split) return prepareImage(image, options, request.handle!);
             return encoder(options).encode(image);
         }
+        case "decodeAnimation":
+            return decoder(args[1] as DecodeOptions).decodeAnimation(args[0] as Uint8Array);
+        case "decodeAnimationRgba8":
+            return decoder(args[1] as DecodeOptions).decodeAnimationRgba8(args[0] as Uint8Array);
+        case "encodeAnimation":
+            return encoder(args[1] as EncodeOptions).encodeAnimation(args[0] as PngAnimation);
+        case "encodeAnimationRgba8":
+            return encoder(args[1] as EncodeOptions).encodeAnimation(rgbaToPngAnimation(args[0] as RgbaAnimationInput));
         case "compressSegment":
             return compressSegment(args[0] as Uint8Array, args[1] as number, args[2] as string);
         case "finish": {

@@ -160,6 +160,85 @@ export interface PngChunks {
     metadata: PngMetadata;
     /** Every chunk from `IHDR` to `IEND`, in file order, including unknown ones. */
     chunks: PngRawChunk[];
+    /**
+     * `acTL`, if the PNG is animated: its number of frames, and how many times
+     * to play them (0 means forever). Absent if the animation chunks are
+     * broken, as `decodeAnimation` would find them: then the PNG reads as a
+     * still image, or `readChunks` throws with `strictAncillary`.
+     */
+    animationControl?: { numFrames: number; numPlays: number };
+    /** Every `fcTL`, in file order; empty unless `animationControl` is there. */
+    frameControls: (FrameControl & { sequenceNumber: number })[];
+}
+
+/** What happens to a frame's area of the canvas after it's shown, before the next frame is drawn. */
+export type DisposeOp =
+    /** Leave the canvas as it is. */
+    | "none"
+    /** Clear the frame's area to fully transparent black. */
+    | "background"
+    /** Put the frame's area back as it was before the frame was drawn. */
+    | "previous";
+
+/** How a frame is drawn onto the canvas: replacing its area, alpha included, or over it, using its alpha. */
+export type BlendOp = "source" | "over";
+
+/** An APNG frame's `fcTL` chunk: its area of the canvas, how long it's shown, and how it's drawn. */
+export interface FrameControl {
+    width: number;
+    height: number;
+    /** Where the frame's left edge is on the canvas. */
+    x: number;
+    /** Where the frame's top edge is on the canvas. */
+    y: number;
+    /** The frame is shown for `delayNum / delayDen` seconds; see `frameDelayMs`. */
+    delayNum: number;
+    /** 0 means 100, so `delayNum` is in hundredths of a second. */
+    delayDen: number;
+    dispose: DisposeOp;
+    blend: BlendOp;
+}
+
+/** A frame decoded by `decodeAnimation`: its `fcTL`, and its own area's samples, as `RawImage.data` holds them. */
+export interface RawFrame extends FrameControl {
+    data: Uint8Array;
+}
+
+/**
+ * An animated PNG decoded in the file's own format by `decodeAnimation`.
+ * Passing it to `encodeAnimation` writes the same frames back.
+ */
+export interface RawAnimation extends PngAnimation {
+    /** The canvas: its size, and every frame's bit depth, color type and interlacing. */
+    header: PngHeader;
+    numPlays: number;
+    frames: RawFrame[];
+    /** Empty unless decoded with `preserveMetadata`. */
+    metadata: PngMetadata;
+    /** In file order, without the animation's own `acTL`, `fcTL` and `fdAT`. Empty unless decoded with `preserveChunks`. */
+    chunks: PngChunk[];
+}
+
+/** A frame as a viewer shows it, from `decodeAnimationRgba8`: the whole canvas. */
+export interface RgbaFrame {
+    /** `width * height * 4` bytes of RGBA, as `RgbaImage.data`. */
+    data: Uint8ClampedArray;
+    /** The frame is shown for `delayNum / delayDen` seconds; see `frameDelayMs`. */
+    delayNum: number;
+    delayDen: number;
+}
+
+/** An animated PNG decoded by `decodeAnimationRgba8`: each frame drawn onto the canvas, with its disposal and blending. */
+export interface RgbaAnimation {
+    width: number;
+    height: number;
+    /** How many times to play the animation; 0 means forever. */
+    numPlays: number;
+    frames: RgbaFrame[];
+    /** Empty unless decoded with `preserveMetadata`. */
+    metadata: PngMetadata;
+    /** In file order, without the animation's own `acTL`, `fcTL` and `fdAT`. Empty unless decoded with `preserveChunks`. */
+    chunks: PngChunk[];
 }
 
 /** Options for `readChunks`. */
@@ -268,6 +347,78 @@ export interface RgbaImageInput {
     interlaced?: boolean;
 }
 
+/**
+ * A frame to encode: its pixels, in the animation's pixel format, for an
+ * image of the frame's size. Every other field has a default. A `RawFrame`
+ * from decoding works as it is.
+ */
+export interface PngFrame extends Partial<FrameControl> {
+    data: Uint8Array;
+    /** Default: the canvas's width. */
+    width?: number;
+    /** Default: the canvas's height. */
+    height?: number;
+    /** Default 0. */
+    x?: number;
+    /** Default 0. */
+    y?: number;
+    /** Default 1: with `delayDen` 10, 0.1 s. */
+    delayNum?: number;
+    /** Default 10. */
+    delayDen?: number;
+    /** Default "none". */
+    dispose?: DisposeOp;
+    /** Default "source". */
+    blend?: BlendOp;
+}
+
+/**
+ * An animated PNG to encode. The header gives the canvas's size and every
+ * frame's pixel format. The first frame is the default image, which viewers
+ * without APNG support show, so it must cover the whole canvas, unless
+ * `defaultImage` gives a separate one.
+ */
+export interface PngAnimation {
+    header: PngHeader;
+    frames: PngFrame[];
+    /** How many times to play the animation; 0, the default, means forever. */
+    numPlays?: number;
+    /**
+     * A default image that isn't part of the animation: a whole canvas, in
+     * the same pixel format, shown by viewers without APNG support and
+     * skipped by the others.
+     */
+    defaultImage?: Uint8Array;
+    /** `PLTE`, shared by every frame. */
+    palette?: [number, number, number][];
+    /** `tRNS`, shared by every frame. */
+    transparency?: PngTransparency;
+    metadata?: PngMetadataInput;
+    /** Raw ancillary chunks, as for `PngImage`. `acTL`, `fcTL` and `fdAT` are skipped: the encoder writes its own. */
+    chunks?: PngChunk[];
+}
+
+/** An 8-bit RGBA frame to encode. An `RgbaFrame` from decoding works as it is. */
+export interface RgbaFrameInput extends Omit<PngFrame, "data"> {
+    /** `width * height * 4` bytes, rows packed with no padding. */
+    data: Uint8Array | Uint8ClampedArray;
+}
+
+/** An 8-bit RGBA animation to encode. An `RgbaAnimation` from decoding works as it is. */
+export interface RgbaAnimationInput {
+    width: number;
+    height: number;
+    frames: RgbaFrameInput[];
+    /** How many times to play the animation; 0, the default, means forever. */
+    numPlays?: number;
+    /** A default image that isn't part of the animation, as for `PngAnimation`: a whole canvas of RGBA. */
+    defaultImage?: Uint8Array | Uint8ClampedArray;
+    metadata?: PngMetadataInput;
+    chunks?: PngChunk[];
+    /** Write Adam7 interlaced. Default false. */
+    interlaced?: boolean;
+}
+
 export type FilterType = "none" | "sub" | "up" | "average" | "paeth";
 
 export interface EncodeOptions {
@@ -308,6 +459,15 @@ export interface EncodeOptions {
      * as a pool.
      */
     threads?: "single" | "auto";
+    /**
+     * Animations only: crop each frame to the area that changed since the
+     * frame before, which makes animations of whole-canvas frames, such as
+     * those decoded with `decodeAnimationRgba8` or converted from video or
+     * GIF, much smaller. What viewers show doesn't change: frames whose
+     * blending or disposal would make cropping change it are left whole.
+     * Default false.
+     */
+    cropFrames?: boolean;
 }
 
 export type PaletteMode = "keep" | "auto";
@@ -476,9 +636,20 @@ function toTransparency(kind: string, values: Uint16Array): PngTransparency {
 
 const isUpper = (char: string) => char >= "A" && char <= "Z";
 
+const disposeOps: DisposeOp[] = ["none", "background", "previous"];
+const blendOps: BlendOp[] = ["source", "over"];
+
+/** Frame controls from wasm's flat array of 9 numbers each. */
+function toFrameControls(flat: Uint32Array): (FrameControl & { sequenceNumber: number })[] {
+    return Array.from({ length: flat.length / 9 }, (_, i) => {
+        const [sequenceNumber, width, height, x, y, delayNum, delayDen, dispose, blend] = flat.subarray(i * 9, i * 9 + 9);
+        return { sequenceNumber, width, height, x, y, delayNum, delayDen, dispose: disposeOps[dispose], blend: blendOps[blend] };
+    });
+}
+
 function toChunks(list: wasm.ChunkList, bytes: Uint8Array): PngChunks {
     try {
-        const { types, offsets, lengths, crcs, known, palette, transparencyKind, transparencyValues } = list;
+        const { types, offsets, lengths, crcs, known, palette, transparencyKind, transparencyValues, animationControl, frameControls } = list;
         const result: PngChunks = {
             header: toHeader(list.header()),
             metadata: takeMetadata(list),
@@ -495,9 +666,11 @@ function toChunks(list: wasm.ChunkList, bytes: Uint8Array): PngChunks {
                     safeToCopy: !isUpper(type[3]),
                 };
             }),
+            frameControls: toFrameControls(frameControls),
         };
         if (palette) result.palette = toPalette(palette);
         if (transparencyKind && transparencyValues) result.transparency = toTransparency(transparencyKind, transparencyValues);
+        if (animationControl) result.animationControl = { numFrames: animationControl[0], numPlays: animationControl[1] };
         return result;
     } finally {
         list.free();
@@ -529,6 +702,41 @@ function toRawImage(decoded: wasm.RawImage): RawImage {
     if (palette) image.palette = toPalette(palette);
     if (transparencyKind && transparencyValues) image.transparency = toTransparency(transparencyKind, transparencyValues);
     return image;
+}
+
+function toRawAnimation(decoded: wasm.RawAnimation): RawAnimation {
+    try {
+        const header = toHeader(decoded.header());
+        const { numPlays, palette, transparencyKind, transparencyValues } = decoded;
+        const metadata = takeMetadata(decoded);
+        const chunks = decoded.takeChunks().map(toChunk);
+        // Each frame's samples are moved out of wasm memory as they're copied, so they're never held twice.
+        const frames = toFrameControls(decoded.frameControls).map(({ sequenceNumber: _, ...control }, i) => ({ ...control, data: decoded.takeFrame(i) }));
+        const defaultImage = decoded.takeDefaultImage();
+        const animation: RawAnimation = { header, numPlays, frames, metadata, chunks };
+        if (defaultImage) animation.defaultImage = defaultImage;
+        if (palette) animation.palette = toPalette(palette);
+        if (transparencyKind && transparencyValues) animation.transparency = toTransparency(transparencyKind, transparencyValues);
+        return animation;
+    } finally {
+        decoded.free();
+    }
+}
+
+function toRgbaAnimation(decoded: wasm.RgbaAnimation): RgbaAnimation {
+    try {
+        const { width, height, numPlays } = decoded;
+        const metadata = takeMetadata(decoded);
+        const chunks = decoded.takeChunks().map(toChunk);
+        // Wasm holds one canvas, drawing each frame onto it in turn.
+        const frames = toFrameControls(decoded.frameControls).map(({ delayNum, delayDen }) => {
+            const pixels = decoded.renderNext();
+            return { data: new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.byteLength), delayNum, delayDen };
+        });
+        return { width, height, numPlays, frames, metadata, chunks };
+    } finally {
+        decoded.free();
+    }
 }
 
 /**
@@ -570,7 +778,32 @@ export function readHeader(bytes: Uint8Array): PngHeader {
     return call(() => toHeader(wasm.readHeader(bytes)));
 }
 
-function encoderArgs(options: EncodeOptions): [number, string, string, boolean, string, string, string] {
+/**
+ * Decodes every frame of an animated PNG (APNG) in the file's own format,
+ * without drawing them onto the canvas: each frame is only its own area. Pass
+ * the result to `encodeAnimation` to re-encode it losslessly. Use
+ * `decodeAnimationRgba8` to display it. Throws a `PngError` for a PNG that
+ * isn't animated, which `decode` reads.
+ */
+export function decodeAnimation(bytes: Uint8Array, options: DecodeOptions = {}): RawAnimation {
+    return call(() => toRawAnimation(wasm.decodeAnimation(bytes, ...decoderArgs(options))));
+}
+
+/**
+ * Decodes an animated PNG (APNG) to the frames a viewer shows: each drawn onto
+ * the canvas with its disposal and blending, as a whole canvas of 8-bit RGBA.
+ * Throws a `PngError` for a PNG that isn't animated, which `decodeRgba8` reads.
+ */
+export function decodeAnimationRgba8(bytes: Uint8Array, options: DecodeOptions = {}): RgbaAnimation {
+    return call(() => toRgbaAnimation(wasm.decodeAnimationRgba8(bytes, ...decoderArgs(options))));
+}
+
+/** How long to show an animation frame, in milliseconds: `delayNum / delayDen` seconds, with a `delayDen` of 0 meaning 100. */
+export function frameDelayMs(frame: { delayNum: number; delayDen: number }): number {
+    return (frame.delayNum * 1000) / (frame.delayDen || 100);
+}
+
+function encoderArgs(options: EncodeOptions): [number, string, string, boolean, string, string, string, boolean] {
     return [
         options.compression ?? 6,
         options.compressionStrategy ?? "dynamic",
@@ -579,6 +812,7 @@ function encoderArgs(options: EncodeOptions): [number, string, string, boolean, 
         options.palette ?? "keep",
         options.strip ?? "keep",
         options.threads ?? "single",
+        options.cropFrames ?? false,
     ];
 }
 
@@ -625,9 +859,51 @@ export function rgbaToPngImage(image: RgbaImageInput): PngImage {
     };
 }
 
-/** Encodes `image`, then frees the wasm copy of it. */
-function encodeWith(image: PngImage, encode: (image: wasm.EncodeImage) => Uint8Array): Uint8Array {
-    const target = toEncodeImage(image);
+/** The canvas, with the shared chunks and the default image's pixels, then each frame. */
+function toEncodeAnimation(animation: PngAnimation): wasm.EncodeImage {
+    const { header, frames, numPlays = 0, defaultImage } = animation;
+    const target = toEncodeImage({ ...animation, data: defaultImage ?? new Uint8Array() });
+    try {
+        target.setAnimation(numPlays, defaultImage !== undefined);
+        for (const frame of frames) {
+            const { width = header.width, height = header.height, x = 0, y = 0, delayNum = 1, delayDen = 10, dispose = "none", blend = "source" } = frame;
+            target.addFrame(width, height, x, y, delayNum, delayDen, dispose, blend, frame.data);
+        }
+        return target;
+    } catch (error) {
+        target.free();
+        throw error;
+    }
+}
+
+/**
+ * The frame's control fields, without its data. Read one by one rather than
+ * spread, so getters, such as an `ImageData`'s, count. Internal: for the
+ * worker pool.
+ */
+export function frameControl(frame: Omit<PngFrame, "data">): Omit<PngFrame, "data"> {
+    const { width, height, x, y, delayNum, delayDen, dispose, blend } = frame;
+    return { width, height, x, y, delayNum, delayDen, dispose, blend };
+}
+
+/** `animation` as `encodeAnimation` takes it. Internal: for the worker pool. */
+export function rgbaToPngAnimation(animation: RgbaAnimationInput): PngAnimation {
+    const { width, height, frames, numPlays, defaultImage, metadata, chunks, interlaced = false } = animation;
+    // Views of the same bytes, so a Uint8ClampedArray isn't copied here.
+    const bytes = (data: Uint8Array | Uint8ClampedArray) => new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    const result: PngAnimation = {
+        header: { width, height, bitDepth: 8, colorType: "rgba", interlaced },
+        frames: frames.map((frame) => ({ ...frameControl(frame), data: bytes(frame.data) })),
+        numPlays,
+        metadata,
+        chunks,
+    };
+    if (defaultImage) result.defaultImage = bytes(defaultImage);
+    return result;
+}
+
+/** Encodes `target`, then frees it. */
+function encodeWith(target: wasm.EncodeImage, encode: (image: wasm.EncodeImage) => Uint8Array): Uint8Array {
     try {
         return encode(target);
     } finally {
@@ -640,7 +916,26 @@ function encodeWith(image: PngImage, encode: (image: wasm.EncodeImage) => Uint8A
  * metadata and raw chunks.
  */
 export function encode(image: PngImage, options: EncodeOptions = {}): Uint8Array {
-    return call(() => encodeWith(image, (target) => wasm.encode(target, ...encoderArgs(options))));
+    return call(() => encodeWith(toEncodeImage(image), (target) => wasm.encode(target, ...encoderArgs(options))));
+}
+
+/**
+ * Encodes an animated PNG (APNG) in any PNG pixel format: its frames, with
+ * their positions, delays, disposal and blending, and the palette,
+ * transparency, metadata and raw chunks they share. `cropFrames` and
+ * `palette: "auto"` make it smaller.
+ */
+export function encodeAnimation(animation: PngAnimation, options: EncodeOptions = {}): Uint8Array {
+    return call(() => encodeWith(toEncodeAnimation(animation), (target) => wasm.encodeAnimation(target, ...encoderArgs(options))));
+}
+
+/**
+ * Encodes an animated PNG from 8-bit RGBA frames: the reverse of
+ * `decodeAnimationRgba8`. Its whole-canvas frames are best encoded with
+ * `cropFrames: true`.
+ */
+export function encodeAnimationRgba8(animation: RgbaAnimationInput, options: EncodeOptions = {}): Uint8Array {
+    return encodeAnimation(rgbaToPngAnimation(animation), options);
 }
 
 /**
@@ -682,6 +977,16 @@ export class PngDecoder {
         return call(() => toChunks(this.#inner.readChunks(bytes), bytes));
     }
 
+    /** Like the `decodeAnimation` function. */
+    decodeAnimation(bytes: Uint8Array): RawAnimation {
+        return call(() => toRawAnimation(this.#inner.decodeAnimation(bytes)));
+    }
+
+    /** Like the `decodeAnimationRgba8` function. */
+    decodeAnimationRgba8(bytes: Uint8Array): RgbaAnimation {
+        return call(() => toRgbaAnimation(this.#inner.decodeAnimationRgba8(bytes)));
+    }
+
     free(): void {
         this.#inner.free();
     }
@@ -701,12 +1006,22 @@ export class PngEncoder {
 
     /** Like the `encode` function, with this encoder's options. */
     encode(image: PngImage): Uint8Array {
-        return call(() => encodeWith(image, (target) => this.#inner.encode(target)));
+        return call(() => encodeWith(toEncodeImage(image), (target) => this.#inner.encode(target)));
     }
 
     /** Like the `encodeRgba8` function, with this encoder's options. */
     encodeRgba8(image: RgbaImageInput): Uint8Array {
         return this.encode(rgbaToPngImage(image));
+    }
+
+    /** Like the `encodeAnimation` function, with this encoder's options. */
+    encodeAnimation(animation: PngAnimation): Uint8Array {
+        return call(() => encodeWith(toEncodeAnimation(animation), (target) => this.#inner.encodeAnimation(target)));
+    }
+
+    /** Like the `encodeAnimationRgba8` function, with this encoder's options. */
+    encodeAnimationRgba8(animation: RgbaAnimationInput): Uint8Array {
+        return this.encodeAnimation(rgbaToPngAnimation(animation));
     }
 
     free(): void {

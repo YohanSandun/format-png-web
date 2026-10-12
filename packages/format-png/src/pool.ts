@@ -1,8 +1,9 @@
 import { defaultSize, spawnWorker } from "#spawn";
 import {
-    PngError,
-    type DecodeOptions, type EncodeOptions, type PngChunks, type PngHeader, type PngImage, type PngText, type RawImage,
-    type ReadChunksOptions, type RgbaImage, type RgbaImageInput,
+    PngError, frameControl,
+    type DecodeOptions, type EncodeOptions, type PngAnimation, type PngChunks, type PngHeader, type PngImage, type PngText,
+    type RawAnimation, type RawImage, type ReadChunksOptions, type RgbaAnimation, type RgbaAnimationInput, type RgbaFrameInput,
+    type RgbaImage, type RgbaImageInput,
 } from "./core.js";
 import type { Op, Prepared, Request, Response, SerializedError } from "./protocol.js";
 
@@ -38,7 +39,9 @@ export interface JobOptions {
      * Default false. The buffer is detached as soon as the method is called:
      * the input, and every other view of the same buffer, becomes empty. It
      * must be a plain `ArrayBuffer`, not a `SharedArrayBuffer`. For `encode`
-     * and `encodeRgba8` this applies to `image.data`; the rest is copied.
+     * and `encodeRgba8` this applies to `image.data`, and for
+     * `encodeAnimation` and `encodeAnimationRgba8` to each frame's `data` and
+     * the `defaultImage`; the rest is copied.
      */
     transfer?: boolean;
     /**
@@ -72,6 +75,12 @@ export interface WorkerPool {
     parseText(type: PngText["chunkType"], data: Uint8Array, options?: JobOptions): Promise<PngText>;
     encode(image: PngImage, options?: EncodeOptions & JobOptions): Promise<Uint8Array>;
     encodeRgba8(image: RgbaImageInput, options?: EncodeOptions & JobOptions): Promise<Uint8Array>;
+    decodeAnimation(bytes: Uint8Array, options?: DecodeOptions & JobOptions): Promise<RawAnimation>;
+    decodeAnimationRgba8(bytes: Uint8Array, options?: DecodeOptions & JobOptions): Promise<RgbaAnimation>;
+    /** Runs on one worker: an animation isn't split across them. `threads` defaults to "single", as for the function. */
+    encodeAnimation(animation: PngAnimation, options?: EncodeOptions & JobOptions): Promise<Uint8Array>;
+    /** Runs on one worker, as `encodeAnimation`. */
+    encodeAnimationRgba8(animation: RgbaAnimationInput, options?: EncodeOptions & JobOptions): Promise<Uint8Array>;
     /**
      * Stops every worker. Queued and running jobs, and every later call, reject
      * with a `WorkerPoolError` whose `code` is "terminated".
@@ -200,15 +209,50 @@ function toError({ name, message }: SerializedError): Error {
  * job starts.
  */
 function own<T extends Uint8Array | Uint8ClampedArray>(bytes: T, transfer: boolean | undefined): T & { buffer: ArrayBuffer } {
-    // Uint8Array or Uint8ClampedArray, never a subclass: a Node Buffer's `slice` doesn't copy.
-    const Type = (bytes instanceof Uint8ClampedArray ? Uint8ClampedArray : Uint8Array) as unknown as {
-        new (source: ArrayLike<number>): T & { buffer: ArrayBuffer };
-        new (buffer: ArrayBuffer, byteOffset: number, length: number): T & { buffer: ArrayBuffer };
+    return ownAll([bytes], transfer)[0];
+}
+
+/**
+ * `own` for several arrays at once. With `transfer`, arrays sharing a buffer
+ * share the moved buffer too, as a buffer can only be moved once.
+ */
+function ownAll<T extends Uint8Array | Uint8ClampedArray>(arrays: T[], transfer: boolean | undefined): (T & { buffer: ArrayBuffer })[] {
+    const moved = new Map<ArrayBuffer, ArrayBuffer>();
+    // Read first: once a buffer is moved, its other views have no offset or length.
+    const views = arrays.map(({ buffer, byteOffset, length }) => ({ buffer, byteOffset, length }));
+    if (transfer && views.some(({ buffer }) => !(buffer instanceof ArrayBuffer))) {
+        throw new TypeError("format-png: `transfer` needs an ArrayBuffer; a SharedArrayBuffer can't be transferred");
+    }
+    return arrays.map((bytes, i) => {
+        // Uint8Array or Uint8ClampedArray, never a subclass: a Node Buffer's `slice` doesn't copy.
+        const Type = (bytes instanceof Uint8ClampedArray ? Uint8ClampedArray : Uint8Array) as unknown as {
+            new (source: ArrayLike<number>): T & { buffer: ArrayBuffer };
+            new (buffer: ArrayBuffer, byteOffset: number, length: number): T & { buffer: ArrayBuffer };
+        };
+        if (!transfer) return new Type(bytes);
+        const { buffer, byteOffset, length } = views[i] as { buffer: ArrayBuffer; byteOffset: number; length: number };
+        let target = moved.get(buffer);
+        if (!target) {
+            target = structuredClone(buffer, { transfer: [buffer] });
+            moved.set(buffer, target);
+        }
+        return new Type(target, byteOffset, length);
+    });
+}
+
+/**
+ * The frames, with only the fields the encoder reads, and the default image,
+ * their bytes owned as `own` owns them; and the buffers to send.
+ */
+function ownFrames<F extends RgbaFrameInput, D extends Uint8Array | Uint8ClampedArray>(
+    frames: F[], defaultImage: D | undefined, transfer: boolean | undefined,
+): { frames: F[]; defaultImage: D | undefined; buffers: ArrayBuffer[] } {
+    const owned = ownAll([...frames.map((frame) => frame.data), ...(defaultImage ? [defaultImage] : [])], transfer);
+    return {
+        frames: frames.map((frame, i) => ({ ...frameControl(frame), data: owned[i] }) as F),
+        defaultImage: defaultImage && (owned[frames.length] as D),
+        buffers: [...new Set(owned.map((bytes) => bytes.buffer))],
     };
-    if (!transfer) return new Type(bytes);
-    const { buffer, byteOffset, length } = bytes;
-    if (!(buffer instanceof ArrayBuffer)) throw new TypeError("format-png: `transfer` needs an ArrayBuffer; a SharedArrayBuffer can't be transferred");
-    return new Type(structuredClone(buffer, { transfer: [buffer] }), byteOffset, length);
 }
 
 /** The options to send to the worker: without `transfer` and `signal`, which can't be cloned. */
@@ -299,6 +343,35 @@ class Pool implements WorkerPool {
         const { width, height, metadata, chunks, interlaced } = image;
         const data = own(image.data, options.transfer);
         return this.#encode("encodeRgba8", { width, height, data, metadata, chunks, interlaced }, data.buffer, options);
+    }
+
+    async decodeAnimation(bytes: Uint8Array, options: DecodeOptions & JobOptions = {}): Promise<RawAnimation> {
+        this.#check(options);
+        const input = own(bytes, options.transfer);
+        return this.#single("decodeAnimation", [input, workerOptions(options)], [input.buffer], options) as Promise<RawAnimation>;
+    }
+
+    async decodeAnimationRgba8(bytes: Uint8Array, options: DecodeOptions & JobOptions = {}): Promise<RgbaAnimation> {
+        this.#check(options);
+        const input = own(bytes, options.transfer);
+        return this.#single("decodeAnimationRgba8", [input, workerOptions(options)], [input.buffer], options) as Promise<RgbaAnimation>;
+    }
+
+    async encodeAnimation(animation: PngAnimation, options: EncodeOptions & JobOptions = {}): Promise<Uint8Array> {
+        this.#check(options);
+        const { frames, defaultImage, buffers } = ownFrames(animation.frames, animation.defaultImage, options.transfer);
+        const input: PngAnimation = { ...animation, frames, defaultImage };
+        if (!defaultImage) delete input.defaultImage;
+        return this.#single("encodeAnimation", [input, workerOptions(options)], buffers, options) as Promise<Uint8Array>;
+    }
+
+    async encodeAnimationRgba8(animation: RgbaAnimationInput, options: EncodeOptions & JobOptions = {}): Promise<Uint8Array> {
+        this.#check(options);
+        const { width, height, numPlays, metadata, chunks, interlaced } = animation;
+        const { frames, defaultImage, buffers } = ownFrames(animation.frames, animation.defaultImage, options.transfer);
+        const input: RgbaAnimationInput = { width, height, frames, numPlays, metadata, chunks, interlaced };
+        if (defaultImage) input.defaultImage = defaultImage;
+        return this.#single("encodeAnimationRgba8", [input, workerOptions(options)], buffers, options) as Promise<Uint8Array>;
     }
 
     async terminate(): Promise<void> {

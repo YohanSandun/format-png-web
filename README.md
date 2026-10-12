@@ -4,7 +4,7 @@
 [![CI](https://github.com/YohanSandun/format-png-web/actions/workflows/ci.yml/badge.svg)](https://github.com/YohanSandun/format-png-web/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A fast, lossless PNG decoder and encoder for the browser and Node, compiled to
+A fast, lossless PNG and APNG decoder and encoder for the browser and Node, compiled to
 WebAssembly from the [`format-png`](https://github.com/YohanSandun/format-png-rust)
 Rust crate. This repository holds the [`format-png`](https://www.npmjs.com/package/format-png)
 npm package and a demo of everything it does.
@@ -41,11 +41,13 @@ const png = encodeRgba8(canvas.getContext("2d").getImageData(0, 0, canvas.width,
 - **Decodes every PNG:** every color type, bit depth from 1 to 16, and Adam7
   interlacing, to 8-bit RGBA for a canvas or in the file's own format.
 - **Encodes losslessly**, 16-bit included, with control over compression and filters.
+- **Animated PNG (APNG):** decodes every frame, as stored or as a viewer shows
+  it, and encodes animations, cropping frames to what changed.
 - **Reads every chunk** without decompressing the image, and writes metadata back:
   color space, ICC profiles, Exif, text and your own chunks.
 - **Makes files smaller:** palette conversion and chunk stripping, without
   changing a pixel.
-- **No dependencies**, about 130 kB packed, with TypeScript types.
+- **No dependencies**, about 215 kB packed, with TypeScript types.
 
 Try it in the [demo](examples/demo), which has a tab for each feature: inspect,
 decode, encode and minimize.

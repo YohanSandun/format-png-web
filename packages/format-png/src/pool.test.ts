@@ -4,8 +4,9 @@ import { readFileSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-    PngError, WorkerPoolError, createWorkerPool, decode, decodeRgba8, encode, encodeRgba8, init, parseText, readChunks, readHeader,
-    type WorkerPool,
+    PngError, WorkerPoolError, createWorkerPool, decode, decodeAnimation, decodeAnimationAsync, decodeAnimationRgba8, decodeRgba8, encode,
+    encodeAnimation, encodeAnimationRgba8, encodeAnimationRgba8Async, encodeRgba8, init, parseText, readChunks, readHeader,
+    terminateDefaultWorkerPool, type WorkerPool,
 } from "../dist/index.js";
 
 const fixture = (name: string) =>
@@ -274,5 +275,50 @@ describe("WorkerPool", () => {
             const shared = new Uint8Array(new SharedArrayBuffer(8));
             await expect(pool.readHeader(shared, { transfer: true })).rejects.toThrow(TypeError);
         });
+    });
+});
+
+describe("WorkerPool animations", () => {
+    /** Whole-canvas RGBA frames of noise, sharing one buffer. */
+    function noisyFrames(width: number, height: number, count: number) {
+        const { data } = noise(width, height * count, 3);
+        const size = width * height * 4;
+        return Array.from({ length: count }, (_, i) => ({ data: data.subarray(i * size, (i + 1) * size), delayNum: i + 1, delayDen: 30 }));
+    }
+
+    it("decodes and encodes like the sync API", async () => {
+        pool = createWorkerPool({ size: 2 });
+        const frames = noisyFrames(24, 16, 4);
+        const options = { cropFrames: true, compression: 9 };
+        const png = encodeAnimationRgba8({ width: 24, height: 16, frames, numPlays: 2 }, options);
+        expect(await pool.encodeAnimationRgba8({ width: 24, height: 16, frames, numPlays: 2 }, options)).toEqual(png);
+
+        const decodeOptions = { preserveMetadata: true, preserveChunks: true };
+        const raw = await pool.decodeAnimation(png, decodeOptions);
+        expect(raw).toEqual(decodeAnimation(png, decodeOptions));
+        expect(await pool.decodeAnimationRgba8(png)).toEqual(decodeAnimationRgba8(png));
+        expect(await pool.encodeAnimation(raw)).toEqual(encodeAnimation(raw));
+        expect((await pool.readChunks(png)).frameControls).toHaveLength(4);
+        await expect(pool.decodeAnimation(encodeRgba8(noise(2, 2, 1)))).rejects.toThrow(PngError);
+    });
+
+    it("transfers frames that share a buffer", async () => {
+        pool = createWorkerPool({ size: 1 });
+        const frames = noisyFrames(8, 8, 3);
+        const defaultImage = noise(8, 8, 9).data;
+        const animation = { width: 8, height: 8, frames, defaultImage };
+        const expected = encodeAnimationRgba8(animation);
+        const png = await pool.encodeAnimationRgba8(animation, { transfer: true });
+        expect(frames[0].data.byteLength).toBe(0);
+        expect(frames[2].data.byteLength).toBe(0);
+        expect(defaultImage.byteLength).toBe(0);
+        expect(png).toEqual(expected);
+    });
+
+    it("runs in the default pool", async () => {
+        const frames = noisyFrames(4, 4, 2);
+        const png = await encodeAnimationRgba8Async({ width: 4, height: 4, frames });
+        expect((await decodeAnimationAsync(png)).frames).toHaveLength(2);
+        await terminateDefaultWorkerPool();
     });
 });

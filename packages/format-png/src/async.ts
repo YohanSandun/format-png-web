@@ -2,7 +2,8 @@
 // by all of them and created on first use. For control over the workers, use
 // `createWorkerPool` instead.
 import type {
-    DecodeOptions, EncodeOptions, PngChunks, PngHeader, PngImage, PngText, RawImage, ReadChunksOptions, RgbaImage, RgbaImageInput,
+    DecodeOptions, EncodeOptions, PngAnimation, PngChunks, PngHeader, PngImage, PngText, RawAnimation, RawImage, ReadChunksOptions,
+    RgbaAnimation, RgbaAnimationInput, RgbaImage, RgbaImageInput,
 } from "./core.js";
 import { createWorkerPool, type JobOptions, type WorkerPool } from "./pool.js";
 
@@ -61,4 +62,24 @@ export function encodeAsync(image: PngImage, options?: EncodeOptions & JobOption
 /** `encodeRgba8`, in a worker. */
 export function encodeRgba8Async(image: RgbaImageInput, options?: EncodeOptions & JobOptions): Promise<Uint8Array> {
     return defaultWorkerPool().encodeRgba8(image, options);
+}
+
+/** `decodeAnimation`, in a worker. */
+export function decodeAnimationAsync(bytes: Uint8Array, options?: DecodeOptions & JobOptions): Promise<RawAnimation> {
+    return defaultWorkerPool().decodeAnimation(bytes, options);
+}
+
+/** `decodeAnimationRgba8`, in a worker. */
+export function decodeAnimationRgba8Async(bytes: Uint8Array, options?: DecodeOptions & JobOptions): Promise<RgbaAnimation> {
+    return defaultWorkerPool().decodeAnimationRgba8(bytes, options);
+}
+
+/** `encodeAnimation`, in a worker. */
+export function encodeAnimationAsync(animation: PngAnimation, options?: EncodeOptions & JobOptions): Promise<Uint8Array> {
+    return defaultWorkerPool().encodeAnimation(animation, options);
+}
+
+/** `encodeAnimationRgba8`, in a worker. */
+export function encodeAnimationRgba8Async(animation: RgbaAnimationInput, options?: EncodeOptions & JobOptions): Promise<Uint8Array> {
+    return defaultWorkerPool().encodeAnimationRgba8(animation, options);
 }

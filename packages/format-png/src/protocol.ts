@@ -18,6 +18,7 @@
 
 export type Op =
     | "decode" | "decodeRgba8" | "readChunks" | "readHeader" | "parseText" | "encode" | "encodeRgba8"
+    | "decodeAnimation" | "decodeAnimationRgba8" | "encodeAnimation" | "encodeAnimationRgba8"
     | "compressSegment" | "finish" | "free"
     /** How many prepared images the worker holds: for tests. */
     | "handles";

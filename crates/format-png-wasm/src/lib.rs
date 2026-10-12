@@ -5,11 +5,11 @@ use format_png::png::metadata::{
     Chromaticities, CodingIndependentCodePoints, Exif, ExifByteOrder, Gamma, IccProfile, PhysicalDimensions,
     RenderingIntent, TextKind, Time, Unit,
 };
-use format_png::png::{ChunkType, FilterType};
+use format_png::png::{AnimationControl, BlendOp, ChunkType, DisposeOp, FilterType, FrameControl};
 use format_png::{
-    ChunkPosition, ColorType, CompressionLevel, CompressionStrategy, FilterStrategy, ImageHeader, ImageRef,
-    Interlace, OwnedChunk, Palette, PaletteAlpha, PaletteMode, PixelFormat, PreparedPng, SegmentCompression,
-    StripChunks, Threads, Transparency,
+    AnimatedImage, AnimationRef, ChunkPosition, ColorType, Compositor, CompressionLevel, CompressionStrategy,
+    FilterStrategy, FrameRef, ImageHeader, ImageRef, Interlace, OwnedChunk, Palette, PaletteAlpha, PaletteMode,
+    PixelFormat, PreparedPng, SegmentCompression, StripChunks, Threads, Transparency,
 };
 use wasm_bindgen::prelude::*;
 
@@ -308,6 +308,8 @@ pub struct ChunkList {
     palette: Option<Vec<u8>>,
     transparency: Option<Transparency>,
     metadata: format_png::Metadata,
+    animation_control: Option<AnimationControl>,
+    frame_controls: Vec<FrameControl>,
     types: String,
     offsets: Vec<u32>,
     lengths: Vec<u32>,
@@ -342,6 +344,19 @@ impl ChunkList {
 
     pub fn metadata(&self) -> Metadata {
         Metadata(self.metadata.clone())
+    }
+
+    /// `acTL`: the number of frames and plays, or `undefined` if the PNG isn't
+    /// animated or its animation is broken.
+    #[wasm_bindgen(getter, js_name = animationControl)]
+    pub fn animation_control(&self) -> Option<Vec<u32>> {
+        self.animation_control.map(|control| vec![control.num_frames, control.num_plays])
+    }
+
+    /// Every `fcTL`, in file order, flattened as `frame_controls` does.
+    #[wasm_bindgen(getter, js_name = frameControls)]
+    pub fn frame_controls(&self) -> Vec<u32> {
+        frame_controls(&self.frame_controls)
     }
 
     /// The four-letter types of every chunk, joined.
@@ -392,6 +407,201 @@ fn transparency_values(transparency: &Transparency) -> Vec<u16> {
         Transparency::Rgb(values) => values.to_vec(),
         Transparency::Palette(alpha) => alpha.values().iter().map(|&a| a.into()).collect(),
     }
+}
+
+/// Each frame control as 9 numbers: sequence number, width, height, x and y
+/// offsets, delay numerator and denominator, dispose op and blend op, the last
+/// two as their values in the file.
+fn frame_controls<'a>(controls: impl IntoIterator<Item = &'a FrameControl>) -> Vec<u32> {
+    controls
+        .into_iter()
+        .flat_map(|c| {
+            [
+                c.sequence_number,
+                c.width,
+                c.height,
+                c.x_offset,
+                c.y_offset,
+                c.delay_num.into(),
+                c.delay_den.into(),
+                c.dispose_op as u32,
+                c.blend_op as u32,
+            ]
+        })
+        .collect()
+}
+
+/// The animation's ancillary chunks without its own `acTL`, `fcTL` and `fdAT`:
+/// the frames already hold what they say, and the encoder writes its own.
+fn animation_chunks(animation: &AnimatedImage) -> Vec<OwnedChunk> {
+    let own = [ChunkType::ACTL, ChunkType::FCTL, ChunkType::FDAT];
+    animation.ancillary_chunks().iter().filter(|chunk| !own.contains(&chunk.chunk_type())).cloned().collect()
+}
+
+/// A decoded animated PNG with its frames in the file's own format, from
+/// `decodeAnimation`. JavaScript reads the header, `frameControls`, palette,
+/// transparency, `metadata()`, `takeChunks()` and `takeDefaultImage()`, and
+/// `takeFrame(i)` for each frame, then calls `free()`.
+#[wasm_bindgen]
+pub struct RawAnimation {
+    header: ImageHeader,
+    num_plays: u32,
+    controls: Vec<FrameControl>,
+    frames: Vec<Vec<u8>>,
+    default_image: Option<Vec<u8>>,
+    palette: Option<Vec<u8>>,
+    transparency: Option<Transparency>,
+    metadata: format_png::Metadata,
+    chunks: Vec<OwnedChunk>,
+}
+
+#[wasm_bindgen]
+impl RawAnimation {
+    /// The canvas: its size, and the bit depth, color type and interlacing of
+    /// every frame.
+    pub fn header(&self) -> Header {
+        self.header.into()
+    }
+
+    /// How many times to play the animation; 0 means forever.
+    #[wasm_bindgen(getter, js_name = numPlays)]
+    pub fn num_plays(&self) -> u32 {
+        self.num_plays
+    }
+
+    /// Every frame's `fcTL`, flattened as `frame_controls` does.
+    #[wasm_bindgen(getter, js_name = frameControls)]
+    pub fn frame_controls(&self) -> Vec<u32> {
+        frame_controls(&self.controls)
+    }
+
+    /// `PLTE`: red, green and blue for each entry, in index order.
+    #[wasm_bindgen(getter)]
+    pub fn palette(&self) -> Option<Vec<u8>> {
+        self.palette.clone()
+    }
+
+    /// `tRNS`: "gray", "rgb" or "palette".
+    #[wasm_bindgen(getter, js_name = transparencyKind)]
+    pub fn transparency_kind(&self) -> Option<String> {
+        self.transparency.as_ref().map(transparency_kind)
+    }
+
+    /// `tRNS`, as `ChunkList.transparencyValues`.
+    #[wasm_bindgen(getter, js_name = transparencyValues)]
+    pub fn transparency_values(&self) -> Option<Vec<u16>> {
+        self.transparency.as_ref().map(transparency_values)
+    }
+
+    /// The parsed ancillary chunks; empty unless `preserveMetadata` was set.
+    pub fn metadata(&self) -> Metadata {
+        Metadata(self.metadata.clone())
+    }
+
+    /// The raw ancillary chunks, without `acTL`, `fcTL` and `fdAT`; empty
+    /// unless `preserveChunks` was set. Moves them out.
+    #[wasm_bindgen(js_name = takeChunks)]
+    pub fn take_chunks(&mut self) -> Vec<Chunk> {
+        std::mem::take(&mut self.chunks).into_iter().map(Chunk).collect()
+    }
+
+    /// Frame `index`'s samples, in the layout `RawImage.intoData` uses, for an
+    /// image of the frame's size. Moves them out.
+    #[wasm_bindgen(js_name = takeFrame)]
+    pub fn take_frame(&mut self, index: u32) -> Result<Vec<u8>, JsError> {
+        let count = self.frames.len();
+        let frame = self.frames.get_mut(index as usize).ok_or_else(|| JsError::new(&format!("frame {index} of {count}")))?;
+        Ok(std::mem::take(frame))
+    }
+
+    /// The default image, if it isn't the first frame: a whole canvas that
+    /// viewers without APNG support show. Moves it out.
+    #[wasm_bindgen(js_name = takeDefaultImage)]
+    pub fn take_default_image(&mut self) -> Option<Vec<u8>> {
+        self.default_image.take()
+    }
+}
+
+/// A decoded animated PNG drawn frame by frame onto an RGBA canvas, from
+/// `decodeAnimationRgba8`. JavaScript reads the getters, `metadata()` and
+/// `takeChunks()`, calls `renderNext()` once per frame, then calls `free()`.
+/// Only one canvas is held at a time.
+#[wasm_bindgen]
+pub struct RgbaAnimation {
+    animation: AnimatedImage,
+    compositor: Compositor,
+    next: usize,
+    chunks: Vec<OwnedChunk>,
+}
+
+#[wasm_bindgen]
+impl RgbaAnimation {
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 {
+        self.animation.width()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.animation.height()
+    }
+
+    /// How many times to play the animation; 0 means forever.
+    #[wasm_bindgen(getter, js_name = numPlays)]
+    pub fn num_plays(&self) -> u32 {
+        self.animation.num_plays()
+    }
+
+    /// Every frame's `fcTL`, flattened as `frame_controls` does.
+    #[wasm_bindgen(getter, js_name = frameControls)]
+    pub fn frame_controls(&self) -> Vec<u32> {
+        frame_controls(self.animation.frames().iter().map(|frame| frame.control()))
+    }
+
+    /// The parsed ancillary chunks; empty unless `preserveMetadata` was set.
+    pub fn metadata(&self) -> Metadata {
+        Metadata(self.animation.metadata().clone())
+    }
+
+    /// The raw ancillary chunks, without `acTL`, `fcTL` and `fdAT`; empty
+    /// unless `preserveChunks` was set. Moves them out.
+    #[wasm_bindgen(js_name = takeChunks)]
+    pub fn take_chunks(&mut self) -> Vec<Chunk> {
+        std::mem::take(&mut self.chunks).into_iter().map(Chunk).collect()
+    }
+
+    /// Draws the next frame and returns a copy of the canvas: `width * height
+    /// * 4` bytes of RGBA.
+    #[wasm_bindgen(js_name = renderNext)]
+    pub fn render_next(&mut self) -> Result<Vec<u8>, JsError> {
+        let frame = self.animation.frames().get(self.next).ok_or_else(|| JsError::new("every frame was already rendered"))?;
+        self.next += 1;
+        Ok(self.compositor.render(frame)?.to_vec())
+    }
+}
+
+/// Decodes every frame of an animated PNG in its own format with a one-off decoder.
+#[wasm_bindgen(js_name = decodeAnimation)]
+pub fn decode_animation(
+    bytes: &[u8],
+    validate_crc: bool,
+    preserve_metadata: bool,
+    preserve_chunks: bool,
+    strict_ancillary: bool,
+) -> Result<RawAnimation, JsError> {
+    WasmDecoder::new(validate_crc, preserve_metadata, preserve_chunks, strict_ancillary).decode_animation(bytes)
+}
+
+/// Decodes an animated PNG to RGBA canvases with a one-off decoder.
+#[wasm_bindgen(js_name = decodeAnimationRgba8)]
+pub fn decode_animation_rgba8(
+    bytes: &[u8],
+    validate_crc: bool,
+    preserve_metadata: bool,
+    preserve_chunks: bool,
+    strict_ancillary: bool,
+) -> Result<RgbaAnimation, JsError> {
+    WasmDecoder::new(validate_crc, preserve_metadata, preserve_chunks, strict_ancillary).decode_animation_rgba8(bytes)
 }
 
 /// A decoded image in the file's own format, from `decode`. JavaScript reads
@@ -499,6 +709,33 @@ impl WasmDecoder {
         Ok(RawImage(self.inner.decode(bytes)?))
     }
 
+    /// Every frame, in the file's own format. A default image that isn't the
+    /// first frame is decoded too, so the animation can be written back whole.
+    #[wasm_bindgen(js_name = decodeAnimation)]
+    pub fn decode_animation(&mut self, bytes: &[u8]) -> Result<RawAnimation, JsError> {
+        let animation = self.inner.decode_animation(bytes)?;
+        let chunks = animation_chunks(&animation);
+        let header = *animation.header();
+        let num_plays = animation.num_plays();
+        let palette = animation.palette().map(|p| p.colors().concat());
+        let transparency = animation.transparency().cloned();
+        let metadata = animation.metadata().clone();
+        let default_image_is_frame = animation.default_image_is_frame();
+        let (controls, frames) =
+            animation.into_frames().into_iter().map(|frame| (*frame.control(), frame.into_image().into_data())).unzip();
+        let default_image = if default_image_is_frame { None } else { Some(self.inner.decode(bytes)?.into_data()) };
+        Ok(RawAnimation { header, num_plays, controls, frames, default_image, palette, transparency, metadata, chunks })
+    }
+
+    /// Every frame, drawn onto the canvas as 8-bit RGBA, one at a time.
+    #[wasm_bindgen(js_name = decodeAnimationRgba8)]
+    pub fn decode_animation_rgba8(&mut self, bytes: &[u8]) -> Result<RgbaAnimation, JsError> {
+        let animation = self.inner.decode_animation(bytes)?;
+        let compositor = Compositor::new(animation.width(), animation.height())?;
+        let chunks = animation_chunks(&animation);
+        Ok(RgbaAnimation { animation, compositor, next: 0, chunks })
+    }
+
     #[wasm_bindgen(js_name = readChunks)]
     pub fn read_chunks(&mut self, bytes: &[u8]) -> Result<ChunkList, JsError> {
         let png = self.inner.read_chunks(bytes)?;
@@ -514,6 +751,8 @@ impl WasmDecoder {
             palette: png.palette().map(|p| p.colors().concat()),
             transparency: png.transparency().cloned(),
             metadata: png.metadata().clone(),
+            animation_control: png.animation_control().copied(),
+            frame_controls: png.frame_controls().to_vec(),
             types: chunks.iter().map(|chunk| chunk.chunk_type().to_string()).collect(),
             lengths: chunks.iter().map(|chunk| chunk.data().len() as u32).collect(),
             crcs: chunks.iter().map(|chunk| chunk.crc()).collect(),
@@ -526,6 +765,10 @@ impl WasmDecoder {
 /// An image to encode, built up from JavaScript: the constructor takes the
 /// header and pixels, and each setter adds a chunk. Pass it to `encode` or
 /// `Encoder.encode`, then call `free()`.
+///
+/// For an animation, the header is the canvas's, the pixels are the default
+/// image's (empty if the first frame is the default image), and `addFrame`
+/// adds each frame. Pass it to `encodeAnimation` or `Encoder.encodeAnimation`.
 #[wasm_bindgen]
 pub struct EncodeImage {
     header: ImageHeader,
@@ -534,6 +777,32 @@ pub struct EncodeImage {
     transparency: Option<Transparency>,
     metadata: format_png::Metadata,
     chunks: Vec<OwnedChunk>,
+    frames: Vec<EncodeFrame>,
+    num_plays: u32,
+    has_default_image: bool,
+}
+
+/// One frame of an animation to encode; see `EncodeImage.addFrame`.
+struct EncodeFrame {
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+    delay_num: u16,
+    delay_den: u16,
+    dispose_op: DisposeOp,
+    blend_op: BlendOp,
+    data: Vec<u8>,
+}
+
+impl EncodeFrame {
+    fn frame_ref(&self) -> FrameRef<'_> {
+        FrameRef::new(self.width, self.height, &self.data)
+            .at(self.x, self.y)
+            .with_delay(self.delay_num, self.delay_den)
+            .with_dispose_op(self.dispose_op)
+            .with_blend_op(self.blend_op)
+    }
 }
 
 #[wasm_bindgen]
@@ -565,7 +834,52 @@ impl EncodeImage {
             transparency: None,
             metadata: format_png::Metadata::default(),
             chunks: Vec::new(),
+            frames: Vec::new(),
+            num_plays: 0,
+            has_default_image: false,
         })
+    }
+
+    /// Plays the animation `num_plays` times; 0 means forever. With
+    /// `default_image`, the constructor's pixels are a default image that isn't
+    /// part of the animation; otherwise the first frame is the default image.
+    #[wasm_bindgen(js_name = setAnimation)]
+    pub fn set_animation(&mut self, num_plays: u32, default_image: bool) {
+        self.num_plays = num_plays;
+        self.has_default_image = default_image;
+    }
+
+    /// Adds a frame of `width × height` pixels, in the layout the constructor
+    /// takes, at `(x, y)` on the canvas, shown for `delay_num / delay_den`
+    /// seconds. `dispose` is "none", "background" or "previous"; `blend` is
+    /// "source" or "over".
+    #[wasm_bindgen(js_name = addFrame)]
+    #[allow(clippy::too_many_arguments, reason = "the frame is flattened for JavaScript")]
+    pub fn add_frame(
+        &mut self,
+        width: u32,
+        height: u32,
+        x: u32,
+        y: u32,
+        delay_num: u16,
+        delay_den: u16,
+        dispose: &str,
+        blend: &str,
+        data: Vec<u8>,
+    ) -> Result<(), JsError> {
+        let dispose_op = match dispose {
+            "none" => DisposeOp::None,
+            "background" => DisposeOp::Background,
+            "previous" => DisposeOp::Previous,
+            _ => return Err(JsError::new(&format!("{dispose} isn't a dispose op"))),
+        };
+        let blend_op = match blend {
+            "source" => BlendOp::Source,
+            "over" => BlendOp::Over,
+            _ => return Err(JsError::new(&format!("{blend} isn't a blend op"))),
+        };
+        self.frames.push(EncodeFrame { width, height, x, y, delay_num, delay_den, dispose_op, blend_op, data });
+        Ok(())
     }
 
     /// `PLTE`: red, green and blue for each entry, in index order.
@@ -740,6 +1054,28 @@ impl EncodeImage {
         }
         image
     }
+
+    fn frame_refs(&self) -> Vec<FrameRef<'_>> {
+        self.frames.iter().map(EncodeFrame::frame_ref).collect()
+    }
+
+    /// The animation of `frames`, from `frame_refs`, with this image's chunks.
+    fn animation_ref<'a>(&'a self, frames: &'a [FrameRef<'a>]) -> AnimationRef<'a> {
+        let mut animation = AnimationRef::new(self.header, frames).with_num_plays(self.num_plays).with_chunks(&self.chunks);
+        if self.has_default_image {
+            animation = animation.with_default_image(&self.data);
+        }
+        if let Some(palette) = &self.palette {
+            animation = animation.with_palette(palette);
+        }
+        if let Some(transparency) = &self.transparency {
+            animation = animation.with_transparency(transparency);
+        }
+        if !self.metadata.is_empty() {
+            animation = animation.with_metadata(&self.metadata);
+        }
+        animation
+    }
 }
 
 /// `value` times 100000, rounded, as `gAMA` and `cHRM` store it.
@@ -763,8 +1099,28 @@ pub fn encode(
     palette: &str,
     strip: &str,
     threads: &str,
+    crop_frames: bool,
 ) -> Result<Vec<u8>, JsError> {
-    WasmEncoder::new(compression, compression_strategy, filter, keep_unsafe_chunks, palette, strip, threads)?.encode(image)
+    WasmEncoder::new(compression, compression_strategy, filter, keep_unsafe_chunks, palette, strip, threads, crop_frames)?
+        .encode(image)
+}
+
+/// Encodes an animation with a one-off encoder: the image, then `Encoder`'s options.
+#[wasm_bindgen(js_name = encodeAnimation)]
+#[allow(clippy::too_many_arguments, reason = "the options are flattened for JavaScript, as in `Encoder::new`")]
+pub fn encode_animation(
+    image: &EncodeImage,
+    compression: u8,
+    compression_strategy: &str,
+    filter: &str,
+    keep_unsafe_chunks: bool,
+    palette: &str,
+    strip: &str,
+    threads: &str,
+    crop_frames: bool,
+) -> Result<Vec<u8>, JsError> {
+    WasmEncoder::new(compression, compression_strategy, filter, keep_unsafe_chunks, palette, strip, threads, crop_frames)?
+        .encode_animation(image)
 }
 
 /// `level` 0 to 9, as a `CompressionLevel`.
@@ -807,8 +1163,10 @@ impl WasmEncoder {
     /// "paeth"; `palette` is "keep" or "auto"; `strip` is "keep", "safe" or
     /// "all"; `threads` is "single" or "auto". WebAssembly has no threads, so
     /// "auto" compresses the image data in segments on this thread: the same
-    /// file as `format_png::Threads::Auto` writes natively.
+    /// file as `format_png::Threads::Auto` writes natively. `crop_frames` only
+    /// affects animations.
     #[wasm_bindgen(constructor)]
+    #[allow(clippy::too_many_arguments, reason = "the options are flattened for JavaScript")]
     pub fn new(
         compression: u8,
         compression_strategy: &str,
@@ -817,6 +1175,7 @@ impl WasmEncoder {
         palette: &str,
         strip: &str,
         threads: &str,
+        crop_frames: bool,
     ) -> Result<WasmEncoder, JsError> {
         let compression = parse_level(compression)?;
         let compression_strategy = parse_strategy(compression_strategy)?;
@@ -848,6 +1207,7 @@ impl WasmEncoder {
         let options = format_png::EncodeOptions {
             compression,
             compression_strategy,
+            crop_frames,
             filter,
             keep_unsafe_chunks,
             palette,
@@ -859,6 +1219,13 @@ impl WasmEncoder {
 
     pub fn encode(&mut self, image: &EncodeImage) -> Result<Vec<u8>, JsError> {
         Ok(self.inner.encode(image.image_ref())?)
+    }
+
+    /// Encodes `image`'s frames as an animated PNG.
+    #[wasm_bindgen(js_name = encodeAnimation)]
+    pub fn encode_animation(&mut self, image: &EncodeImage) -> Result<Vec<u8>, JsError> {
+        let frames = image.frame_refs();
+        Ok(self.inner.encode_animation(image.animation_ref(&frames))?)
     }
 
     /// Everything `encode` does except compressing the image data, which is
